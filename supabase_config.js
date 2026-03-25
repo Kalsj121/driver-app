@@ -1,7 +1,5 @@
 // ============================================================
 // supabase_config.js — Configuration Supabase
-// ÉTAPE 1 : Remplacez les deux valeurs ci-dessous
-// Trouvez-les dans : Supabase Dashboard → Settings → API
 // ============================================================
 
 const SUPABASE_URL  = 'https://pwaoxghgitobsxuiqlut.supabase.co';      // ← à remplacer
