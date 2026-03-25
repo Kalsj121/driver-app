@@ -134,7 +134,6 @@ textarea.fi{resize:vertical;min-height:72px;}
 </style>
 </head>
 <body>
-
 <!-- MAIN APP -->
 <div id="main-app">
 <div class="hdr">
@@ -527,7 +526,6 @@ function doLogout() {
 let currentUser = null;
 
 (async()=>{
-  // No authentication required - show app directly
   currentUser = { full_name: 'Bureau', username: 'admin' };
   showApp();
   // Load messages from Supabase
