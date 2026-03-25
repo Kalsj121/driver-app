@@ -257,19 +257,85 @@ function switchView(v) {
   if (v === 'messages') renderMessages();
 }
 
-// ── DRIVERS — fetch from server ───────────────────────────────
+// ── DRIVERS — fetch from Supabase missions ────────────────────
 let drivers = [];
 let driverTicker = null;
 
+/**
+ * Convert a Supabase mission (with stops[]) to the dashboard driver format.
+ * Only missions that are active (not completed, dayStartTs today) are shown.
+ */
+function missionToDriverStatus(mission) {
+  const stops = mission.stops || [];
+
+  // Determine current step and current stop
+  // The active stop is the last stop that hasn't been fully completed (no tDepart)
+  // or if the mission is in transit (step 7), use the last completed stop
+  let curStop = null;
+  let step = 0;
+
+  // Find the last stop in progress (no tDepart = still at this location)
+  for (let i = stops.length - 1; i >= 0; i--) {
+    if (!stops[i].tDepart) { curStop = stops[i]; break; }
+  }
+
+  // If all stops have tDepart, driver is in transit (step 7)
+  if (!curStop && stops.length > 0) {
+    curStop = stops[stops.length - 1]; // last stop for location reference
+    step = 7; // En transit
+  } else if (curStop) {
+    // Determine step from timestamps present on current stop
+    if      (!curStop.tArrival)      step = 0;
+    else if (!curStop.tDockAssigned) step = 1; // Attente quai
+    else if (!curStop.tDockReady)    step = 2; // Quai attribué
+    else if (!curStop.tOpsStart)     step = 3; // À quai
+    else if (!curStop.tOpsEnd)       step = 4; // Opération
+    else if (!curStop.tDoc)          step = 5; // Fin opération (attente CMR)
+    else                             step = 6; // CMR reçu
+  }
+
+  const now = Date.now();
+  const minJourney = mission.dayStartTs ? Math.floor((now - mission.dayStartTs) / 60000) : null;
+
+  return {
+    user_id:      mission.id,
+    driver_name:  mission.driver,
+    plate:        mission.plate || '',
+    step,
+    location:     curStop ? curStop.location : '',
+    operation:    curStop ? (curStop.operation || '') : '',
+    dock:         curStop ? (curStop.dock || '') : '',
+    ts_arrival:       curStop?.tArrival        ? new Date(curStop.tArrival).toISOString()        : null,
+    ts_dock_assigned: curStop?.tDockAssigned   ? new Date(curStop.tDockAssigned).toISOString()   : null,
+    ts_dock_ready:    curStop?.tDockReady      ? new Date(curStop.tDockReady).toISOString()      : null,
+    ts_ops_start:     curStop?.tOpsStart       ? new Date(curStop.tOpsStart).toISOString()       : null,
+    ts_ops_end:       curStop?.tOpsEnd         ? new Date(curStop.tOpsEnd).toISOString()         : null,
+    min_wait:     curStop?.minWait   ?? null,
+    min_dock:     curStop?.minDock   ?? null,
+    min_ops:      curStop?.minOps    ?? null,
+    min_journey:  minJourney,
+    updated_at:   mission.updatedat || new Date(mission.dayStartTs || now).toISOString()
+  };
+}
+
 async function fetchDrivers() {
   try {
-    const r = await fetch(API+'realtime.php?action=status', {credentials:'include'});
-    if (r.ok) {
-      const d = await r.json();
-      if (d.ok) { drivers = d.drivers || []; }
+    // Load all non-completed missions from Supabase
+    if (window.loadMissionsFromSupabase) {
+      const allMissions = await window.loadMissionsFromSupabase();
+
+      // Keep only missions active today and not completed
+      const todayStr = new Date().toLocaleDateString('fr-BE');
+      const activeMissions = allMissions.filter(m =>
+        !m.completed && m.date === todayStr
+      );
+
+      drivers = activeMissions.map(missionToDriverStatus)
+        .filter(d => d.step > 0); // only show drivers who have started a stop
     }
   } catch(e) {
-    // Demo mode: keep existing drivers (API not available)
+    console.warn('[Dashboard] fetchDrivers error:', e.message);
+    // Keep existing drivers on error
   }
   renderDashboard();
   document.getElementById('last-refresh').textContent =
@@ -511,6 +577,49 @@ function showToast(msg){
   setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(-50%) translateY(70px)';},2500);
 }
 
+// ── REALTIME — Supabase subscriptions ────────────────────────
+function startRealtimeSync() {
+  if (!window.supabaseClient) {
+    console.warn('[Realtime] supabaseClient not available, retrying in 2s...');
+    setTimeout(startRealtimeSync, 2000);
+    return;
+  }
+  try {
+    window.supabaseClient
+      .channel('lca-realtime')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'missions' },
+        payload => {
+          console.log('[Realtime] Mission update received:', payload.eventType);
+          fetchDrivers();
+        }
+      )
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'messages' },
+        payload => {
+          console.log('[Realtime] Message update received:', payload.eventType);
+          loadMessages();
+        }
+      )
+      .subscribe(status => {
+        console.log('[Realtime] Channel status:', status);
+        const badge = document.querySelector('.live-badge');
+        if (badge) {
+          if (status === 'SUBSCRIBED') {
+            badge.innerHTML = '<div class="live-dot"></div>En direct';
+            badge.style.color = 'var(--gmid)';
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            badge.innerHTML = '⚠️ Hors-ligne';
+            badge.style.color = 'var(--amber)';
+          }
+        }
+      });
+    console.log('[Realtime] Subscriptions actives');
+  } catch(e) {
+    console.warn('[Realtime] Echec démarrage:', e.message);
+  }
+}
+
 function showApp() {
   const mainApp = document.getElementById('main-app');
   if (mainApp) mainApp.style.display = '';
@@ -525,15 +634,26 @@ function doLogout() {
 // ── INIT ──────────────────────────────────────────────────────
 let currentUser = null;
 
+async function waitForSupabase(maxWaitMs = 5000) {
+  const start = Date.now();
+  while (!window.loadMissionsFromSupabase && Date.now() - start < maxWaitMs) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+}
+
 (async()=>{
   currentUser = { full_name: 'Bureau', username: 'admin' };
   showApp();
+  // Wait for supabase_config.js to register its functions (max 5s)
+  await waitForSupabase();
   // Load messages from Supabase
   loadMessages();
-  // Fetch drivers and start auto-refresh
+  // Fetch drivers and start auto-refresh (fallback polling every 30s)
   await fetchDrivers();
   setInterval(fetchDrivers, 30000);
   setInterval(loadMessages, 15000);
+  // Start Supabase realtime subscriptions for instant updates
+  startRealtimeSync();
 })();
 </script>
 </body>
