@@ -593,6 +593,22 @@ function startTicker() {
 // ============================================================
 // ACTIONS
 // ============================================================
+// ── SUPABASE LIVE SYNC ────────────────────────────────────────
+// Saves the active mission to Supabase immediately.
+// Called after every step change so the dashboard is always up to date.
+function syncActive() {
+  if (!active) return;
+  // Build a snapshot: include curStop in progress (not yet in active.stops)
+  const snapshot = JSON.parse(JSON.stringify(active));
+  if (curStop) {
+    // Attach curStop as the last element so dashboard can read current phase
+    snapshot.stops = [...(active.stops || []), curStop];
+  }
+  saveMissionToSupabase(snapshot).catch(e =>
+    console.warn('[Sync] Supabase save failed:', e.message)
+  );
+}
+
 function startDay() {
   const name=$('d-name').value.trim(), plate=$('d-plate').value.trim().toUpperCase();
   if(!name){toast('Veuillez indiquer votre nom.',true);return;}
@@ -603,6 +619,7 @@ function startDay() {
   $('dayhdr').style.display='';
   startTicker();
   setStep(1);
+  syncActive(); // ← créer la ligne dans Supabase dès le démarrage
   toast('Bonne journée '+name+' !');
 }
 
@@ -623,6 +640,7 @@ function doArrival() {
   };
   $('f-loc').value='';
   setStep(2);
+  syncActive(); // ← étape 1 : arrivée
   toast('Arrivée confirmée à '+loc);
 }
 
@@ -632,18 +650,21 @@ function doDockAssigned() {
   curStop.dock=dock; curStop.tDockAssigned=Date.now();
   $('f-dock').value='';
   setStep(3);
+  syncActive(); // ← étape 2 : quai attribué
   toast('Quai '+dock+' attribué ✓');
 }
 
 function doDockReady() {
   curStop.tDockReady=Date.now();
   setStep(4);
+  syncActive(); // ← étape 3 : à quai
   toast('À quai ✓ — prêt pour l\'opération');
 }
 
 function doOpsStart() {
   curStop.tOpsStart=Date.now();
   setStep(5);
+  syncActive(); // ← étape 4 : opération démarrée
   toast('Opération démarrée ▶');
 }
 
@@ -651,6 +672,7 @@ function doOpsEnd() {
   curStop.tOpsEnd=Date.now();
   resetCargo(); resetCMR();
   setStep(6);
+  syncActive(); // ← étape 5 : opération terminée
   toast('Opération terminée ■');
 }
 
@@ -671,6 +693,7 @@ function doDoc() {
   active.stops.push(Object.assign({}, curStop));
   $('f-comment').value='';
   setStep(7);
+  syncActive(); // ← étape 6 : CMR reçu, stop terminé
   toast('CMR enregistré ✓ — stop terminé');
 }
 
@@ -678,6 +701,7 @@ function doDepart() {
   const last=active.stops[active.stops.length-1];
   last.tDepart=Date.now(); save();
   curStop=null;
+  syncActive(); // ← étape 7 : en transit
   setStep(1);
   toast('🚛 Bon trajet !');
 }
@@ -687,7 +711,6 @@ function endDay() {
   active.dayEndTs=Date.now(); active.completed=true;
   missions.push(JSON.parse(JSON.stringify(active)));
   save();
-  // Also save to Supabase
   saveMissionToSupabase(active).catch(e => console.warn('Failed to save to Supabase:', e));
   active=null; curStop=null; step=0; dayStart=null;
   clearInterval(ticker);
