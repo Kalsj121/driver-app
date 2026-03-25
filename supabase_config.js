@@ -205,6 +205,7 @@ window.updateMessageReadStatus = updateMessageReadStatus;
 window.loadMissionsFromSupabase = loadMissionsFromSupabase;
 window.loadMessagesFromSupabase = loadMessagesFromSupabase;
 window.initSupabase = initSupabase;
+window.supabaseClient = supabaseClient; // expose for realtime subscriptions
 
 console.log('[Supabase] Functions registered globally');
 
