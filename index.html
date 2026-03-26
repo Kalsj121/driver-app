@@ -24,7 +24,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 #login-screen.hidden{display:none;}
 .login-box{background:#fff;border-radius:18px;padding:28px 24px;width:100%;max-width:380px;box-shadow:0 8px 40px rgba(0,0,0,0.18);}
 .login-logo{text-align:center;margin-bottom:20px;}
-.login-logo img{width:64px;height:64px;object-fit:contain;}
+.login-logo img{width:96px;height:96px;object-fit:contain;}
 .login-title{font-size:20px;font-weight:700;color:var(--t1);text-align:center;margin-bottom:4px;}
 .login-sub{font-size:13px;color:var(--t2);text-align:center;margin-bottom:22px;}
 .login-fg{margin-bottom:14px;}
@@ -38,7 +38,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 /* HEADER */
 .hdr{background:var(--header);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;}
 .logo{display:flex;align-items:center;gap:10px;}
-.logo-img{width:32px;height:32px;object-fit:contain;border-radius:6px;background:#fff;padding:2px;}
+.logo-img{width:40px;height:40px;object-fit:contain;border-radius:6px;background:#fff;padding:2px;}
 .ltx{font-size:15px;font-weight:700;color:#fff;letter-spacing:-.02em;}
 .lsb{font-size:11px;color:rgba(255,255,255,0.75);}
 .dayhdr{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;color:#fff;background:rgba(255,255,255,0.2);padding:5px 12px;border-radius:99px;display:none;letter-spacing:.02em;}
@@ -330,7 +330,7 @@ input[type=file]{display:none;}
 
         <!-- Cargo type -->
         <div class="fg">
-          <label class="fl">Type de marchandise <span style="font-weight:400;color:var(--t3);">(sélection multiple possible)</span></label>
+          <label class="fl">Type de marchandise <span style="color:var(--red);font-weight:700;">*</span> <span style="font-weight:400;color:var(--t3);">(obligatoire — sélection multiple possible)</span></label>
           <div style="display:flex;gap:8px;">
             <button type="button" class="ctyp" id="btn-loose" onclick="toggleCargo('loose')">📦 Loose</button>
             <button type="button" class="ctyp" id="btn-uld" onclick="toggleCargo('uld')">🛄 ULD</button>
@@ -683,11 +683,18 @@ function startDay() {
   $('dayhdr').style.display='';
   startTicker();
   setStep(1);
+  // Enregistrement immédiat dans active_drivers (visible sur le Dashboard instantanément)
+  registerActiveDriver(name, plate).then(() => {
+    console.log('[Driver] Registered in active_drivers');
+  });
   syncActive();
   toast('Bonne journée '+name+' !');
-
-  // Save driver as active in Supabase
-  registerActiveDriver(name, plate);
+  // Mise à jour lastseen toutes les 2 minutes pendant la journée
+  if (!window._activeDriverInterval) {
+    window._activeDriverInterval = setInterval(() => {
+      if (active && name) registerActiveDriver(name, plate);
+    }, 120000);
+  }
 }
 
 async function registerActiveDriver(name, plate) {
@@ -732,7 +739,7 @@ function doOpsStart() { curStop.tOpsStart=Date.now(); setStep(5); syncActive(); 
 function doOpsEnd() { curStop.tOpsEnd=Date.now(); resetCargo(); resetCMR(); setStep(6); syncActive(); toast('Opération terminée ■'); }
 
 function doDoc() {
-  // Validation: need either (camera photo) OR (gallery photo AND (AWB or ULD encoded))
+  // ── 1. Photo CMR obligatoire ──────────────────────────────
   if (!active._cmr) {
     toast('Veuillez joindre une photo du CMR avant de confirmer.', true);
     return;
@@ -741,6 +748,63 @@ function doDoc() {
     toast('Pour la galerie, encodez d\'abord un AWB ou un N° ULD.', true);
     return;
   }
+
+  // ── 2. Type de fret obligatoire (Loose ou ULD) ─────────────
+  const isLooseOn = $('btn-loose').classList.contains('on');
+  const isULDOn   = $('btn-uld').classList.contains('on');
+  if (!isLooseOn && !isULDOn) {
+    toast('Veuillez sélectionner le type de fret : Loose ou ULD.', true);
+    // Mettre en évidence les boutons
+    ['btn-loose','btn-uld'].forEach(id => {
+      const el = $(id);
+      el.style.borderColor = 'var(--red)';
+      el.style.color = 'var(--red)';
+      setTimeout(() => { el.style.borderColor=''; el.style.color=''; }, 2500);
+    });
+    return;
+  }
+
+  // ── 3. Validations Loose : AWB + quantité obligatoires ─────
+  if (isLooseOn) {
+    const looseItems = document.querySelectorAll('#loose-items .ci');
+    for (const item of looseItems) {
+      const awb = item.querySelector('[data-field="awb"]')?.value.trim() || '';
+      const pieces = item.querySelector('[data-field="pieces"]')?.value.trim() || '';
+      if (!awb) {
+        toast('Loose : veuillez saisir le N° AWB pour chaque expédition.', true);
+        item.querySelector('[data-field="awb"]')?.focus();
+        return;
+      }
+      if (!pieces || parseInt(pieces) < 1) {
+        toast('Loose : veuillez saisir la quantité (pièces) pour chaque expédition.', true);
+        item.querySelector('[data-field="pieces"]')?.focus();
+        return;
+      }
+    }
+    if (!looseItems.length) {
+      toast('Loose : veuillez ajouter au moins une expédition avec AWB et quantité.', true);
+      return;
+    }
+  }
+
+  // ── 4. Validations ULD : AWB obligatoire ───────────────────
+  if (isULDOn) {
+    const uldItems = document.querySelectorAll('#uld-items .ci');
+    for (const item of uldItems) {
+      const awb = item.querySelector('[data-field="awb"]')?.value.trim() || '';
+      if (!awb) {
+        toast('ULD : veuillez saisir le N° AWB pour chaque ULD.', true);
+        item.querySelector('[data-field="awb"]')?.focus();
+        return;
+      }
+    }
+    if (!uldItems.length) {
+      toast('ULD : veuillez ajouter au moins un ULD avec N° AWB.', true);
+      return;
+    }
+  }
+
+  // ── 5. Tout OK → enregistrement ───────────────────────────
   curStop.tDoc=Date.now();
   curStop.comment=$('f-comment').value;
   curStop.cargoType=document.querySelector('input[name="ctype"]:checked')?.value||'';
@@ -894,6 +958,18 @@ function handleCMR(e, source) {
     document.getElementById('cmr-gallery-note').style.display='none';
     const prev = document.getElementById('cmr-prev');
     prev.innerHTML='<img src="'+ev.target.result+'"/>'; prev.style.display='';
+    // Mettre en évidence la section cargo
+    const cargoSection = document.querySelector('#btn-loose')?.closest('.fg');
+    if (cargoSection) {
+      setTimeout(() => {
+        cargoSection.scrollIntoView({behavior:'smooth', block:'center'});
+        cargoSection.style.transition = 'background .3s';
+        cargoSection.style.background = 'var(--blt)';
+        cargoSection.style.borderRadius = 'var(--rmd)';
+        cargoSection.style.padding = '10px';
+        setTimeout(() => { cargoSection.style.background=''; cargoSection.style.padding=''; }, 1800);
+      }, 400);
+    }
   };
   r.readAsDataURL(f);
 }
@@ -1002,6 +1078,42 @@ async function initMessages() {
   } else {
     try { messages = JSON.parse(localStorage.getItem('lca_msgs') || '[]'); } catch(e) {}
   }
+  startDriverRealtimeSync();
+}
+
+// ============================================================
+// REALTIME — écoute les nouveaux messages du bureau
+// ============================================================
+let _realtimeChannel = null;
+function startDriverRealtimeSync() {
+  if (!window.supabaseClient) { setTimeout(startDriverRealtimeSync, 2000); return; }
+  if (_realtimeChannel) return; // déjà abonné
+  try {
+    _realtimeChannel = window.supabaseClient
+      .channel('driver-messages-rt')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
+        const raw = payload.new;
+        if (!raw) return;
+        const driverName = active ? active.driver : (currentDriver?.fullName || '');
+        // N'accepter que les messages bureau destinés à ce chauffeur ou à tous
+        if (raw.from !== 'bureau') return;
+        if (raw.to !== 'all' && raw.to !== driverName) return;
+        // Éviter les doublons
+        const already = messages.find(m => String(m.id) === String(raw.id));
+        if (already) return;
+        const msg = { ...raw, ts: new Date(raw.ts).getTime() };
+        messages.push(msg);
+        try { localStorage.setItem('lca_msgs', JSON.stringify(messages)); } catch(e) {}
+        renderMessages();
+        // Badge + toast discret
+        const badge = $('msg-badge');
+        if (badge) { const n = parseInt(badge.textContent||'0')+1; badge.textContent=n; badge.style.display=''; }
+        toast('📨 Nouveau message du bureau');
+      })
+      .subscribe(status => {
+        console.log('[Driver Realtime] status:', status);
+      });
+  } catch(e) { console.warn('[Driver Realtime] failed:', e.message); }
 }
 
 async function saveMsgs() {
