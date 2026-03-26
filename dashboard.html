@@ -272,6 +272,7 @@ textarea.fi{resize:vertical;min-height:72px;}
         <option value="all">Tous</option>
       </select>
       <button class="btn bo bsm" onclick="exportMsgsCSV()" style="margin-left:4px;">CSV</button>
+      <button class="btn bsm" onclick="deleteAllMessages()" style="margin-left:4px;background:none;border:1px solid rgba(163,45,45,0.4);color:var(--red);">🗑 Tout supprimer</button>
     </div>
   </div>
 
@@ -343,20 +344,41 @@ function doLogin() {
   errEl.style.display = 'none';
   if (u === MANAGER_CREDENTIALS.username && p === MANAGER_CREDENTIALS.password) {
     currentUser = { full_name: 'Bureau', username: u };
-    document.getElementById('login-screen').classList.add('hidden');
-    document.getElementById('main-app').style.display = '';
-    document.getElementById('ver-footer').style.display = '';
-    document.getElementById('user-name').textContent = currentUser.full_name;
-    onAppReady();
+    try { sessionStorage.setItem('lca_bureau_session', '1'); } catch(e) {}
+    showApp();
   } else {
     errEl.style.display = '';
   }
 }
 
+function showApp() {
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('main-app').style.display = '';
+  document.getElementById('ver-footer').style.display = '';
+  document.getElementById('user-name').textContent = currentUser?.full_name || 'Bureau';
+  onAppReady();
+}
+
 function doLogout() {
+  try { sessionStorage.removeItem('lca_bureau_session'); } catch(e) {}
   showToast('Déconnexion…');
   setTimeout(() => location.reload(), 500);
 }
+
+// Auto-restore session on page reload (Cmd+Shift+R stays logged in)
+(function tryRestoreSession() {
+  try {
+    if (sessionStorage.getItem('lca_bureau_session') === '1') {
+      currentUser = { full_name: 'Bureau', username: MANAGER_CREDENTIALS.username };
+      // Wait for DOM then show app
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', showApp);
+      } else {
+        showApp();
+      }
+    }
+  } catch(e) {}
+})();
 
 // Enter key on password field
 document.addEventListener('DOMContentLoaded', () => {
@@ -566,7 +588,7 @@ function buildCard(d, threshold) {
     ${updSecs!=null?'<div class="dc-upd">MAJ il y a '+updSecs+'s</div>':''}
     <div style="display:flex;gap:6px;margin-top:8px;">
       <button class="dc-msg-btn" style="flex:1;margin-top:0;" onclick="quickMsg('${d.driver_name}')">💬 Message</button>
-      <button class="dc-msg-btn" style="flex:0 0 auto;margin-top:0;color:var(--red);border-color:rgba(163,45,45,0.3);" onclick="dismissCard(${d.user_id})" title="Masquer de la vue">✕ Masquer</button>
+      <button class="dc-msg-btn" style="flex:0 0 36px;min-width:36px;max-width:36px;margin-top:0;padding:0;color:var(--red);border-color:rgba(163,45,45,0.3);font-size:15px;" onclick="dismissCard(${d.user_id})" title="Masquer de la vue">✕</button>
     </div>
   </div>`;
 }
@@ -599,10 +621,34 @@ function saveMsgs(){try{localStorage.setItem('lca_bureau_msgs',JSON.stringify(me
 function loadMessages() {
   if (window.loadMessagesFromSupabase) {
     window.loadMessagesFromSupabase().then(sb => {
-      if (sb && sb.length > 0) { messages = sb; saveMsgs(); }
+      // Always sync with Supabase — if Supabase has 0 messages, clear local cache too
+      messages = sb || [];
+      saveMsgs();
       renderMessages();
     }).catch(() => renderMessages());
   } else { renderMessages(); }
+}
+
+async function deleteAllMessages() {
+  if (!confirm('Supprimer tous les messages ? Cette action est irréversible.')) return;
+  if (window.supabaseClient) {
+    try {
+      await window.supabaseClient.from('messages').delete().neq('id', 0);
+    } catch(e) { console.warn('[Messages] Delete failed:', e.message); }
+  }
+  messages = [];
+  saveMsgs();
+  renderMessages();
+  showToast('Tous les messages supprimés ✓');
+}
+
+async function deleteMessage(msgId) {
+  if (window.supabaseClient) {
+    try { await window.supabaseClient.from('messages').delete().eq('id', msgId); } catch(e) {}
+  }
+  messages = messages.filter(m => m.id !== msgId);
+  saveMsgs();
+  renderMessages();
 }
 
 function buildDriverDropdown() {
@@ -667,10 +713,13 @@ function renderMessages() {
     const isBureau = m.from==='bureau';
     const cls = isBureau?'msg-bubble msg-bureau':'msg-bubble msg-driver';
     const who = isBureau?('📨 '+m.fromName+' → '+(m.toLabel||m.to)):('🚛 '+m.fromName);
-    return `<div class="${cls}">
+    return `<div class="${cls}" style="position:relative;">
       <div class="msg-meta">${!isBureau&&!m.read?'<span class="msg-unread-dot"></span>':''}${who}</div>
       <div class="msg-txt">${m.text}</div>
-      <div class="msg-time">${fmtTime(m.ts)}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px;">
+        <div class="msg-time">${fmtTime(m.ts)}</div>
+        <button onclick="deleteMessage(${m.id})" style="background:none;border:none;cursor:pointer;color:var(--t3);font-size:11px;padding:0 2px;line-height:1;" title="Supprimer ce message">✕</button>
+      </div>
     </div>`;
   }).join('');
   messages.forEach(m=>{ if(m.from==='driver') m.read=true; });
@@ -717,14 +766,26 @@ async function loadArchiveList() {
 }
 
 function renderArchiveTable(container, missions) {
-  container.innerHTML = '<table class="reg-table"><thead><tr><th>Date</th><th>Chauffeur</th><th>Plaque</th><th>Stops</th><th>Durée journée</th></tr></thead><tbody>'
+  container.innerHTML = '<table class="reg-table"><thead><tr><th>Date</th><th>Chauffeur</th><th>Plaque</th><th>Stops</th><th>Durée journée</th><th></th></tr></thead><tbody>'
     + missions.map(m => {
       const dur = (m.dayStartTs && m.dayEndTs)
         ? Math.round((new Date(m.dayEndTs||m.dayendts) - new Date(m.dayStartTs||m.daystartts)) / 60000) + ' min'
         : '—';
       const stops = (m.stops||[]).length;
-      return `<tr><td>${m.date||'—'}</td><td>${m.driver||'—'}</td><td>${m.plate||'—'}</td><td>${stops}</td><td>${dur}</td></tr>`;
+      return `<tr><td>${m.date||'—'}</td><td>${m.driver||'—'}</td><td>${m.plate||'—'}</td><td>${stops}</td><td>${dur}</td><td><button class="del-btn" onclick="deleteArchiveMission(${m.id})">✕</button></td></tr>`;
     }).join('') + '</tbody></table>';
+}
+
+async function deleteArchiveMission(id) {
+  if (!confirm('Supprimer cette mission archivée ?')) return;
+  if (window.supabaseClient) {
+    try {
+      await window.supabaseClient.from('missions_archive').delete().eq('id', id);
+      await window.supabaseClient.from('missions').delete().eq('id', id);
+    } catch(e) { console.warn('[Archive] Delete failed:', e.message); }
+  }
+  showToast('Mission supprimée ✓');
+  loadArchiveList();
 }
 
 async function exportArchiveCSV() {
