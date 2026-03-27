@@ -34,13 +34,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .login-btn{width:100%;padding:13px;font-size:15px;font-weight:700;background:var(--header);color:#fff;border:none;border-radius:var(--rmd);cursor:pointer;font-family:inherit;margin-top:4px;}
 .login-btn:active{opacity:.9;}
 .login-err{font-size:13px;color:var(--red);text-align:center;margin-top:10px;display:none;}
-/* EYE TOGGLE */
-.pw-wrap{position:relative;}
-.pw-wrap input{padding-right:42px;}
-.pw-eye{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--t2);font-size:16px;padding:2px;line-height:1;}
-/* CHAMPS GRISÉS */
-.fi-locked{background:var(--subcard)!important;color:var(--t2)!important;cursor:not-allowed!important;border-color:var(--b1)!important;pointer-events:none;}
-select.fi-locked{pointer-events:none;opacity:.7;}
 
 /* HEADER */
 .hdr{background:var(--header);padding:12px 16px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;}
@@ -186,6 +179,15 @@ input[type=file]{display:none;}
 
 /* ACCOUNT CREATE PANEL */
 .account-section{background:var(--subcard);border-radius:var(--rlg);padding:14px 16px;margin-bottom:10px;}
+
+/* PASSWORD EYE TOGGLE */
+.pw-wrap{position:relative;}
+.pw-wrap input{padding-right:42px;}
+.pw-eye{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--t2);font-size:16px;padding:2px;line-height:1;}
+
+/* LOCKED FIELDS (greyed info card) */
+.fi-locked{background:var(--subcard)!important;color:var(--t2)!important;cursor:not-allowed!important;border-color:var(--b1)!important;pointer-events:none;}
+select.fi-locked{pointer-events:none;opacity:.7;}
 </style>
 </head>
 <body>
@@ -211,13 +213,13 @@ input[type=file]{display:none;}
     </div>
     <div class="login-fg">
       <label>Plaque tracteur</label>
-      <select id="l-plate-tracteur" style="width:100%;padding:11px 14px;font-size:15px;border:1px solid var(--b2);border-radius:var(--rmd);background:var(--bg);color:var(--t1);outline:none;font-family:inherit;">
+      <select id="l-plate-tracteur" class="fi" style="background:#fff;font-size:15px;">
         <option value="">— Sélectionner tracteur —</option>
       </select>
     </div>
     <div class="login-fg">
       <label>Plaque remorque</label>
-      <select id="l-plate-remorque" style="width:100%;padding:11px 14px;font-size:15px;border:1px solid var(--b2);border-radius:var(--rmd);background:var(--bg);color:var(--t1);outline:none;font-family:inherit;">
+      <select id="l-plate-remorque" class="fi" style="background:#fff;font-size:15px;">
         <option value="">— Sélectionner remorque —</option>
       </select>
     </div>
@@ -352,7 +354,7 @@ input[type=file]{display:none;}
           <input type="file" id="cmr-file-camera" accept="image/*" capture="environment" onchange="handleCMR(event,'camera')"/>
           <input type="file" id="cmr-file-gallery" accept="image/*" onchange="handleCMR(event,'gallery')"/>
           <div id="cmr-prev" class="cprev" style="display:none;"></div>
-          <div class="cmr-valid-note" id="cmr-gallery-note">⚠️ Pour utiliser la galerie, veuillez d'abord encoder un AWB ou un numéro ULD ci-dessous.</div>
+          <div class="cmr-valid-note" id="cmr-gallery-note">⚠️ Pour utiliser la galerie, veuillez d'abord encoder un AWB (Loose) ou un N° ULD ci-dessous.</div>
         </div>
 
         <!-- Cargo type -->
@@ -385,8 +387,7 @@ input[type=file]{display:none;}
           <div id="uld-items">
             <div class="ci">
               <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:12px;font-weight:700;color:var(--t2);">ULD 1</span></div>
-              <div style="margin-bottom:8px;"><label class="fl">N° ULD <span style="font-weight:400;color:var(--t3);">Ex: PMC-8712-XF</span></label><input class="fi uldi" type="text" placeholder="PMC-8712-XF" data-field="uld" oninput="fmtULD(this);checkCMRGalleryEligibility()"/></div>
-              <div><label class="fl">N° AWB <span style="font-weight:400;color:var(--t3);">123-4567 8901</span></label><input class="fi awb" type="text" inputmode="numeric" placeholder="123-4567 8901" maxlength="13" data-field="awb" oninput="fmtAWB(this);checkCMRGalleryEligibility()"/></div>
+              <div><label class="fl">N° ULD <span style="font-weight:400;color:var(--t3);">Ex: PMC-8712-XF</span></label><input class="fi uldi" type="text" placeholder="PMC-8712-XF" data-field="uld" oninput="fmtULD(this);checkCMRGalleryEligibility()"/></div>
             </div>
           </div>
           <button type="button" class="btn bo" style="padding:7px;font-size:13px;margin-top:4px;" onclick="addULD()">+ ULD</button>
@@ -451,87 +452,10 @@ input[type=file]{display:none;}
 'use strict';
 
 // ============================================================
-// UTILS
-// ============================================================
-function togglePw(inputId, btn) {
-  const input = document.getElementById(inputId);
-  if (!input) return;
-  const show = input.type === 'password';
-  input.type = show ? 'text' : 'password';
-  btn.textContent = show ? '🙈' : '👁';
-}
-
-function lockVehicleSelects(locked) {
-  const t = document.getElementById('d-plate-tracteur');
-  const r = document.getElementById('d-plate-remorque');
-  [t, r].forEach(el => {
-    if (!el) return;
-    el.disabled = locked;
-    el.classList.toggle('fi-locked', locked);
-  });
-}
-
-async function removeActiveDriver(username) {
-  if (!window.supabaseClient || !username) return;
-  try {
-    await window.supabaseClient.from('active_drivers').delete().eq('username', username);
-    console.log('[Driver] Removed from active_drivers');
-  } catch(e) { console.warn('[Driver remove]', e.message); }
-}
-
-// ============================================================
 // AUTH — Driver accounts stored in Supabase (table: driver_accounts)
 // Fallback: localStorage for offline use
 // ============================================================
-let currentDriver = null; // {username, fullName, plateTracteur, plateRemorque}
-
-// ============================================================
-// VEHICLES — Load dropdowns from Supabase
-// ============================================================
-async function loadVehicleDropdowns() {
-  try {
-    let waitMs = 0;
-    while (waitMs < 6000) {
-      if (window.supabaseClient) break;
-      await new Promise(r => setTimeout(r, 200));
-      waitMs += 200;
-    }
-    if (!window.supabaseClient) return;
-
-    const [tracteurs, remorques] = await Promise.all([
-      window.loadVehiclesFromSupabase('tracteur'),
-      window.loadVehiclesFromSupabase('remorque')
-    ]);
-
-    const selT = document.getElementById('l-plate-tracteur');
-    const selR = document.getElementById('l-plate-remorque');
-
-    const optT = tracteurs.map(v => `<option value="${v.plate}">${v.plate}</option>`).join('');
-    const optR = remorques.map(v => `<option value="${v.plate}">${v.plate}</option>`).join('');
-
-    // Login screen selects
-    if (tracteurs.length) selT.innerHTML = '<option value="">— Sélectionner tracteur —</option>' + optT;
-    if (remorques.length) selR.innerHTML = '<option value="">— Sélectionner remorque —</option>' + optR;
-
-    // ph0 selects (Informations chauffeur — verrouillés par défaut)
-    const ph0T = document.getElementById('d-plate-tracteur');
-    const ph0R = document.getElementById('d-plate-remorque');
-    if (ph0T && tracteurs.length) {
-      ph0T.innerHTML = '<option value="">— Tracteur —</option>' + optT;
-      if (currentDriver?.plateTracteur) ph0T.value = currentDriver.plateTracteur;
-    }
-    if (ph0R && remorques.length) {
-      ph0R.innerHTML = '<option value="">— Remorque —</option>' + optR;
-      if (currentDriver?.plateRemorque) ph0R.value = currentDriver.plateRemorque;
-    }
-    console.log('[Vehicles] Dropdowns loaded:', tracteurs.length, 'tracteurs,', remorques.length, 'remorques');
-  } catch(e) {
-    console.warn('[Vehicles] Failed to load dropdowns:', e.message);
-  }
-}
-
-// Load dropdowns as soon as page is ready
-document.addEventListener('DOMContentLoaded', () => loadVehicleDropdowns());
+let currentDriver = null; // {username, fullName, plate, login}
 
 // Built-in fallback accounts (if Supabase not ready)
 // Format: {username, password, fullName}
@@ -541,41 +465,42 @@ const FALLBACK_ACCOUNTS = [
 ];
 
 async function getDriverAccounts() {
+  // Comptes uniquement depuis Supabase — pas de fallback localStorage pour la sécurité
   if (window.supabaseClient) {
     try {
       const { data, error } = await window.supabaseClient
         .from('driver_accounts')
         .select('*');
-      if (!error && data && data.length > 0) return data;
+      if (!error && data) return data;
     } catch(e) {}
   }
-  // Fallback to localStorage
-  try {
-    const stored = JSON.parse(localStorage.getItem('lca_driver_accounts') || '[]');
-    return stored;
-  } catch(e) { return []; }
+  return [];
 }
 
 async function doLogin() {
-  const login = document.getElementById('l-login').value.trim();
-  const password = document.getElementById('l-password').value;
-  const plateTracteur = document.getElementById('l-plate-tracteur').value.trim().toUpperCase();
-  const plateRemorque = document.getElementById('l-plate-remorque').value.trim().toUpperCase();
+  const login         = document.getElementById('l-login').value.trim();
+  const password      = document.getElementById('l-password').value;
+  const plateTracteur = document.getElementById('l-plate-tracteur').value.trim();
+  const plateRemorque = document.getElementById('l-plate-remorque').value.trim();
   const errEl = document.getElementById('login-err');
-  const btn = document.querySelector('.login-btn');
+  const btn   = document.querySelector('.login-btn');
   errEl.style.display = 'none';
 
-  if (!login || !password || !plateTracteur || !plateRemorque) {
-    errEl.textContent = 'Veuillez remplir tous les champs, y compris les plaques.';
+  if (!login || !password) {
+    errEl.textContent = 'Veuillez remplir votre identifiant et mot de passe.';
+    errEl.style.display = '';
+    return;
+  }
+  if (!plateTracteur) {
+    errEl.textContent = 'Veuillez sélectionner votre tracteur.';
     errEl.style.display = '';
     return;
   }
 
-  // Show loading state
   btn.disabled = true;
   btn.textContent = 'Connexion…';
 
-  // Wait for Supabase client AND initSupabase() to finish (max 8s)
+  // Attendre que Supabase soit prêt (max 8s)
   let waitMs = 0;
   while (waitMs < 8000) {
     if (window.supabaseClient && window._supabaseReady) break;
@@ -583,9 +508,8 @@ async function doLogin() {
     waitMs += 150;
   }
 
-  // If Supabase never became ready, try anyway (will fall back to localStorage)
   const accounts = await getDriverAccounts();
-  const account = accounts.find(a => a.username === login && a.password === password);
+  const account  = accounts.find(a => a.username === login && a.password === password);
 
   btn.disabled = false;
   btn.textContent = 'Se connecter';
@@ -598,20 +522,18 @@ async function doLogin() {
     return;
   }
 
-  // Login success
+  // Connexion réussie
   currentDriver = { username: login, fullName: account.fullname || account.username, plateTracteur, plateRemorque };
   localStorage.setItem('lca_current_driver', JSON.stringify(currentDriver));
 
-  // Pre-fill driver fields (ph0) and lock them
+  // Pré-remplir les champs chauffeur (grisés)
   document.getElementById('d-name').value = currentDriver.fullName;
-  document.getElementById('d-plate-tracteur').value = plateTracteur;
-  document.getElementById('d-plate-remorque').value = plateRemorque;
-  lockVehicleSelects(true);
-  const btnStart = document.getElementById('btn-start-day');
-  if (btnStart) btnStart.textContent = '▶ Démarrer ma journée';
 
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('main-app').style.display = '';
+
+  // Charger les listes déroulantes véhicules ET pré-sélectionner
+  await loadVehicleDropdowns();
 
   await initMissions();
   await initMessages();
@@ -623,14 +545,11 @@ async function doLogin() {
     const saved = JSON.parse(localStorage.getItem('lca_current_driver') || 'null');
     if (saved && saved.username) {
       currentDriver = saved;
-      document.getElementById('d-name').value = currentDriver.fullName;
-      // Les options seront pré-sélectionnées par loadVehicleDropdowns() dès qu'elles sont chargées
-      // On pose quand même la valeur directement si les options existent déjà
-      document.getElementById('d-plate-tracteur').value = currentDriver.plateTracteur || currentDriver.plate || '';
-      document.getElementById('d-plate-remorque').value = currentDriver.plateRemorque || '';
-      lockVehicleSelects(true);
+      document.getElementById('d-name').value = currentDriver.fullName || '';
       document.getElementById('login-screen').classList.add('hidden');
       document.getElementById('main-app').style.display = '';
+      // Charger les listes véhicules et pré-sélectionner
+      loadVehicleDropdowns();
     }
   } catch(e) {}
 })();
@@ -786,36 +705,40 @@ function syncActive() {
 // ACTIONS
 // ============================================================
 function startDay() {
-  const name = document.getElementById('d-name').value.trim();
-  const plateTracteur = document.getElementById('d-plate-tracteur').value.trim().toUpperCase();
-  const plateRemorque = document.getElementById('d-plate-remorque').value.trim().toUpperCase();
-  if(!name){toast('Veuillez indiquer votre nom.',true);return;}
-  if(!plateTracteur||!plateRemorque){toast('Veuillez sélectionner tracteur et remorque.',true);return;}
+  const name          = document.getElementById('d-name').value.trim();
+  const plateTracteur = document.getElementById('d-plate-tracteur').value.trim();
+  const plateRemorque = document.getElementById('d-plate-remorque').value.trim();
+  if (!name)          { toast('Erreur : nom chauffeur introuvable.', true); return; }
+  if (!plateTracteur) { toast('Veuillez sélectionner un tracteur.', true); return; }
 
-  // Mettre à jour currentDriver si les plaques ont changé (nouvelle mission)
-  if (currentDriver && (currentDriver.plateTracteur !== plateTracteur || currentDriver.plateRemorque !== plateRemorque)) {
-    currentDriver.plateTracteur = plateTracteur;
-    currentDriver.plateRemorque = plateRemorque;
-    localStorage.setItem('lca_current_driver', JSON.stringify(currentDriver));
-  }
+  dayStart = Date.now();
+  active = {
+    id: Date.now(), driver: name,
+    plate: plateTracteur, plateTracteur, plateRemorque,
+    plate_remorque: plateRemorque,
+    date: todayStr(), dayStartTs: dayStart,
+    stops: [], completed: false, _cmr: null
+  };
+  curStop = null;
 
-  dayStart=Date.now();
-  active={id:Date.now(),driver:name,plateTracteur,plateRemorque,plate:plateTracteur,date:todayStr(),dayStartTs:dayStart,stops:[],completed:false,_cmr:null};
-  curStop=null;
+  // Griser les sélecteurs pour la durée de la journée
   lockVehicleSelects(true);
   const btnStart = document.getElementById('btn-start-day');
-  if (btnStart) btnStart.textContent = '▶ Démarrer ma journée';
-  show('ph0',false); show('ph-mission',true);
-  $('dayhdr').style.display='';
+  if (btnStart) btnStart.textContent = '▶ Journée en cours…';
+
+  show('ph0', false); show('ph-mission', true);
+  $('dayhdr').style.display = '';
   startTicker();
   setStep(1);
-  // Enregistrement immédiat dans active_drivers (visible sur le Dashboard instantanément)
+
+  // Enregistrement immédiat dans active_drivers
   registerActiveDriver(name, plateTracteur, plateRemorque).then(() => {
     console.log('[Driver] Registered in active_drivers');
   });
   syncActive();
-  toast('Bonne journée '+name+' !');
-  // Mise à jour lastseen toutes les 2 minutes pendant la journée
+  toast('Bonne journée ' + name + ' !');
+
+  // Mise à jour lastseen toutes les 2 minutes
   if (!window._activeDriverInterval) {
     window._activeDriverInterval = setInterval(() => {
       if (active && name) registerActiveDriver(name, plateTracteur, plateRemorque);
@@ -823,17 +746,70 @@ function startDay() {
   }
 }
 
-async function registerActiveDriver(name, plateTracteur, plateRemorque) {
+async function registerActiveDriver(name, plate, plateRemorque) {
   if (!window.supabaseClient) return;
   try {
     await window.supabaseClient.from('active_drivers').upsert([{
-      username: currentDriver?.username || name,
-      fullname: name,
-      plate: plateTracteur,
+      username:       currentDriver?.username || name,
+      fullname:       name,
+      plate:          plate || '',
       plate_remorque: plateRemorque || '',
-      lastseen: new Date().toISOString()
+      lastseen:       new Date().toISOString()
     }], { onConflict: 'username' });
   } catch(e) { console.warn('[Driver register]', e.message); }
+}
+
+async function removeActiveDriver(username) {
+  if (!window.supabaseClient || !username) return;
+  try {
+    await window.supabaseClient.from('active_drivers').delete().eq('username', username);
+  } catch(e) { console.warn('[Driver remove]', e.message); }
+}
+
+function lockVehicleSelects(locked) {
+  const t = document.getElementById('d-plate-tracteur');
+  const r = document.getElementById('d-plate-remorque');
+  [t, r].forEach(el => {
+    if (!el) return;
+    el.disabled = locked;
+    el.classList.toggle('fi-locked', locked);
+  });
+}
+
+function togglePw(inputId, btn) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const show = input.type === 'password';
+  input.type = show ? 'text' : 'password';
+  btn.textContent = show ? '🙈' : '👁';
+}
+
+async function loadVehicleDropdowns() {
+  if (!window.loadActiveVehiclesFromSupabase) return;
+  try {
+    const tracteurs = await window.loadActiveVehiclesFromSupabase('tracteur');
+    const remorques = await window.loadActiveVehiclesFromSupabase('remorque');
+    const optT = tracteurs.map(v => `<option value="${v.plate}">${v.plate}</option>`).join('');
+    const optR = remorques.map(v => `<option value="${v.plate}">${v.plate}</option>`).join('');
+
+    // Sélecteurs login
+    const loginT = document.getElementById('l-plate-tracteur');
+    const loginR = document.getElementById('l-plate-remorque');
+    if (loginT) loginT.innerHTML = '<option value="">— Sélectionner tracteur —</option>' + optT;
+    if (loginR) loginR.innerHTML = '<option value="">— Sélectionner remorque —</option>' + optR;
+
+    // Sélecteurs ph0 (info chauffeur)
+    const ph0T = document.getElementById('d-plate-tracteur');
+    const ph0R = document.getElementById('d-plate-remorque');
+    if (ph0T) {
+      ph0T.innerHTML = '<option value="">— Tracteur —</option>' + optT;
+      if (currentDriver?.plateTracteur) ph0T.value = currentDriver.plateTracteur;
+    }
+    if (ph0R) {
+      ph0R.innerHTML = '<option value="">— Remorque —</option>' + optR;
+      if (currentDriver?.plateRemorque) ph0R.value = currentDriver.plateRemorque;
+    }
+  } catch(e) { console.warn('[loadVehicleDropdowns]', e.message); }
 }
 
 function doArrival() {
@@ -914,19 +890,19 @@ function doDoc() {
     }
   }
 
-  // ── 4. Validations ULD : AWB obligatoire ───────────────────
+  // ── 4. Validations ULD : N° ULD obligatoire ────────────────
   if (isULDOn) {
     const uldItems = document.querySelectorAll('#uld-items .ci');
     for (const item of uldItems) {
-      const awb = item.querySelector('[data-field="awb"]')?.value.trim() || '';
-      if (!awb) {
-        toast('ULD : veuillez saisir le N° AWB pour chaque ULD.', true);
-        item.querySelector('[data-field="awb"]')?.focus();
+      const uld = item.querySelector('[data-field="uld"]')?.value.trim() || '';
+      if (!uld) {
+        toast('ULD : veuillez saisir le N° ULD pour chaque ULD.', true);
+        item.querySelector('[data-field="uld"]')?.focus();
         return;
       }
     }
     if (!uldItems.length) {
-      toast('ULD : veuillez ajouter au moins un ULD avec N° AWB.', true);
+      toast('ULD : veuillez ajouter au moins un ULD avec N° ULD.', true);
       return;
     }
   }
@@ -959,33 +935,29 @@ function doDepart() {
 
 function endDay() {
   $('end-modal').classList.remove('open');
-  active.dayEndTs=Date.now(); active.completed=true;
+  active.dayEndTs = Date.now(); active.completed = true;
   missions.push(JSON.parse(JSON.stringify(active)));
   save();
   saveMissionToSupabase(active).catch(e => console.warn('Save failed:', e));
 
-  // Conserver une référence avant de nullifier
-  const finishedMission = active;
+  // Conserver une référence avant nullification
+  const finishedMission  = active;
   const finishedUsername = currentDriver?.username || active.driver;
 
-  active=null; curStop=null; step=0; dayStart=null;
+  active = null; curStop = null; step = 0; dayStart = null;
   clearInterval(ticker);
   clearInterval(window._activeDriverInterval);
   window._activeDriverInterval = null;
 
-  show('ph-mission',false); show('ph0',true);
-  $('dayhdr').style.display='none'; $('dayhdr').textContent='00:00:00';
-  $('stops-tl').innerHTML=''; $('live-banner').innerHTML='';
-  for(let i=1;i<=7;i++) show('f'+i,false);
-
-  // Verrouiller les selects et remettre le texte du bouton
+  show('ph-mission', false); show('ph0', true);
+  $('dayhdr').style.display = 'none'; $('dayhdr').textContent = '00:00:00';
+  $('stops-tl').innerHTML = ''; $('live-banner').innerHTML = '';
+  for (let i = 1; i <= 7; i++) show('f' + i, false);
   lockVehicleSelects(true);
   const btnStart = document.getElementById('btn-start-day');
   if (btnStart) btnStart.textContent = '▶ Démarrer ma journée';
-
   toast('Journée clôturée et enregistrée ✓');
 
-  // Archive + retrait de la liste des chauffeurs actifs
   archiveMissionData(finishedMission);
   removeActiveDriver(finishedUsername);
 }
@@ -997,8 +969,7 @@ async function archiveMissionData(mission) {
     await window.supabaseClient.from('missions_archive').upsert([{
       id: mission.id,
       driver: mission.driver,
-      plate: mission.plateTracteur || mission.plate || '',
-      plate_remorque: mission.plateRemorque || '',
+      plate: mission.plate || '',
       date: mission.date,
       daystartts: new Date(mission.dayStartTs).toISOString(),
       dayendts: mission.dayEndTs ? new Date(mission.dayEndTs).toISOString() : null,
@@ -1016,20 +987,15 @@ function endMissionNewOne() {
   save();
   saveMissionToSupabase(active).catch(e => console.warn('Save failed:', e));
   archiveMissionData(active);
-
-  // Arrêter la mission en cours mais garder la journée active
-  active = null;
-  curStop = null;
-  for(let i=1;i<=7;i++) show('f'+i,false);
+  active = null; curStop = null;
+  for (let i = 1; i <= 7; i++) show('f' + i, false);
   $('stops-tl').innerHTML = '';
   $('live-banner').innerHTML = '';
-
-  // Retour à ph0 avec les selects déverrouillés pour changer de véhicule
   show('ph-mission', false); show('ph0', true);
+  // Déverrouiller les sélecteurs → le chauffeur peut changer de véhicule
   lockVehicleSelects(false);
   const btnStart = document.getElementById('btn-start-day');
   if (btnStart) btnStart.textContent = '▶ Démarrer nouvelle mission';
-
   toast('Mission terminée ✓ — choisissez vos véhicules et démarrez la prochaine');
 }
 
@@ -1085,8 +1051,8 @@ function triggerGallery() {
 }
 
 function hasCargoEncoded() {
-  // Check if at least one AWB or ULD value is filled
-  const awbs = document.querySelectorAll('#loose-items [data-field="awb"], #uld-items [data-field="awb"]');
+  // Loose: AWB doit être rempli / ULD: N° ULD suffit
+  const awbs = document.querySelectorAll('#loose-items [data-field="awb"]');
   const ulds = document.querySelectorAll('#uld-items [data-field="uld"]');
   for (const el of [...awbs, ...ulds]) { if (el.value.trim().length > 0) return true; }
   return false;
@@ -1185,7 +1151,7 @@ function addLoose() {
 function addULD() {
   const c=$('uld-items'), n=c.querySelectorAll('.ci').length+1;
   const d=document.createElement('div'); d.className='ci';
-  d.innerHTML='<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:12px;font-weight:700;color:var(--t2);">ULD '+n+'</span><button type="button" class="rmbtn" onclick="this.closest(\'.ci\').remove()">✕</button></div><div style="margin-bottom:8px;"><label class="fl">N° ULD</label><input class="fi uldi" type="text" placeholder="PMC-8712-XF" data-field="uld" oninput="fmtULD(this);checkCMRGalleryEligibility()"/></div><div><label class="fl">N° AWB</label><input class="fi awb" type="text" inputmode="numeric" placeholder="123-4567 8901" maxlength="13" data-field="awb" oninput="fmtAWB(this);checkCMRGalleryEligibility()"/></div>';
+  d.innerHTML='<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:12px;font-weight:700;color:var(--t2);">ULD '+n+'</span><button type="button" class="rmbtn" onclick="this.closest(\'.ci\').remove()">✕</button></div><div><label class="fl">N° ULD</label><input class="fi uldi" type="text" placeholder="PMC-8712-XF" data-field="uld" oninput="fmtULD(this);checkCMRGalleryEligibility()"/></div>';
   c.appendChild(d);
 }
 
@@ -1201,8 +1167,7 @@ function collectCargo() {
   if ($('btn-uld').classList.contains('on')) {
     document.querySelectorAll('#uld-items .ci').forEach(item => {
       const u = item.querySelector('[data-field="uld"]')?.value || '';
-      const a = item.querySelector('[data-field="awb"]')?.value || '';
-      if (u || a) res.push({type:'uld', uld:u, awb:a, pieces:''});
+      if (u) res.push({type:'uld', uld:u, awb:'', pieces:''});
     });
   }
   return res;
@@ -1311,6 +1276,18 @@ function renderMessages() {
 // INIT
 // ============================================================
 document.addEventListener('DOMContentLoaded', async () => {
+  // Charger les listes véhicules pour le login (sélecteurs tracteur/remorque)
+  // On attend que Supabase soit prêt avant de peupler
+  const waitSB = async (maxMs = 8000) => {
+    let w = 0;
+    while (w < maxMs) {
+      if (window.loadActiveVehiclesFromSupabase) break;
+      await new Promise(r => setTimeout(r, 200));
+      w += 200;
+    }
+  };
+  waitSB().then(() => loadVehicleDropdowns());
+
   // If already logged in (session restored), init data
   if (currentDriver) {
     await initMissions();
