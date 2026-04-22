@@ -472,7 +472,7 @@ select.fi-locked{pointer-events:none;opacity:.7;}
 <div class="toast" id="toast"></div>
 
 <!-- VERSION FOOTER -->
-<div class="version-footer">Version 1.02 (release: 22 avril 2026) — © Kalsj121</div>
+<div class="version-footer">Version 1.03 (release: 22 avril 2026) — © Kalsj121</div>
 
 </div><!-- /main-app -->
 
@@ -655,7 +655,7 @@ function setStep(s) {
     const title = $('f0-title'), sub = $('f0-subtitle');
     if(active?.tDispatchNotified) {
       show('f0-notify-area', false); show('f0-wait-area', true);
-      if(title) title.textContent = 'En attente d\'instruction';
+      if(title) title.textContent = 'En attente d\'instructions';
       if(sub)   sub.textContent   = 'Le bureau a été notifié. En attente d\'instructions…';
     } else {
       show('f0-notify-area', true); show('f0-wait-area', false);
@@ -682,7 +682,7 @@ function goBack() {
 // ============================================================
 // LIVE BANNER
 // ============================================================
-const STEP_LABELS = ['En attente d\'instruction','Arrivée — attente attribution quai','Quai attribué — mise à quai en cours','À quai — attente début opération','Opération en cours','Opération terminée — en attente CMR','CMR reçu — prêt à partir','En transit'];
+const STEP_LABELS = ['En attente d\'instructions','Arrivée — attente attribution quai','Quai attribué — mise à quai en cours','À quai — attente début opération','Opération en cours','Opération terminée — en attente CMR','CMR reçu — prêt à partir','En transit'];
 const STEP_COLORS = ['bn-blue','bn-blue','bn-blue','bn-amber','bn-amber','bn-green','bn-gray','bn-transit'];
 
 function updateBanner() {
@@ -923,7 +923,13 @@ function endPause() {
 async function updateActiveDriverState(fields) {
   if (!window.supabaseClient || !currentDriver?.username) return;
   try {
-    const payload = { lastseen: new Date().toISOString(), ...fields };
+    // Convertir les timestamps numériques en ISO pour les colonnes timestamptz
+    const norm = {};
+    Object.entries(fields || {}).forEach(([k, v]) => {
+      if (/_(start|end|at)$/i.test(k) && typeof v === 'number') norm[k] = new Date(v).toISOString();
+      else norm[k] = v;
+    });
+    const payload = { lastseen: new Date().toISOString(), ...norm };
     await window.supabaseClient.from('active_drivers')
       .update(payload).eq('username', currentDriver.username);
   } catch(e) { /* colonne manquante : silencieux */ }
@@ -1126,26 +1132,36 @@ function endDay() {
 async function archiveMissionData(mission) {
   if (!window.supabaseClient || !mission) return;
   try {
+    const iso = v => !v ? null : (typeof v === 'string' ? v : new Date(v).toISOString());
     const payload = {
       id:             mission.id,
       driver:         mission.driver,
       plate:          mission.plateTracteur || mission.plate || '',
       plate_remorque: mission.plateRemorque || mission.plate_remorque || '',
       date:           mission.date,
-      daystartts:     new Date(mission.dayStartTs).toISOString(),
-      dayendts:       mission.dayEndTs ? new Date(mission.dayEndTs).toISOString() : null,
+      daystartts:     iso(mission.dayStartTs),
+      dayendts:       iso(mission.dayEndTs),
       completed:      true,
       stops:          mission.stops || [],
       archivedat:     new Date().toISOString()
     };
-    if (Array.isArray(mission.pauses)) payload.pauses = mission.pauses;
+    if (Array.isArray(mission.pauses))      payload.pauses            = mission.pauses;
+    if ('tDispatchNotified' in mission)     payload.tdispatchnotified = iso(mission.tDispatchNotified);
+    if ('tDispatchReceived' in mission)     payload.tdispatchreceived = iso(mission.tDispatchReceived);
+
+    const OPTIONAL_COLS = ['pauses','tdispatchnotified','tdispatchreceived'];
     let { error } = await window.supabaseClient.from('missions_archive').upsert([payload], { onConflict: 'id' });
-    // Retry sans pauses si la colonne n'existe pas encore (migration v1.02 non appliquée)
-    if (error && 'pauses' in payload && /column.+pauses|pauses.+column/i.test(error.message || '')) {
-      delete payload.pauses;
-      await window.supabaseClient.from('missions_archive').upsert([payload], { onConflict: 'id' });
+    let safety = 4;
+    while (error && safety-- > 0) {
+      const msg = error.message || '';
+      const dropped = OPTIONAL_COLS.find(c => c in payload && (msg.includes(c) || new RegExp('column.+' + c + '|' + c + '.+column', 'i').test(msg)));
+      if (!dropped) break;
+      delete payload[dropped];
+      const retry = await window.supabaseClient.from('missions_archive').upsert([payload], { onConflict: 'id' });
+      error = retry.error;
     }
-    console.log('[Archive] Mission archived successfully');
+    if (error) console.warn('[Archive] Persisted with reduced fields:', error.message);
+    else console.log('[Archive] Mission archived successfully');
   } catch(e) { console.warn('[Archive] Failed:', e.message); }
 }
 

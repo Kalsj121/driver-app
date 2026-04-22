@@ -75,10 +75,15 @@ async function loadMissionsFromSupabase() {
     if (error) { console.warn('[Supabase] Error loading missions:', error.message); return []; }
     return (data || []).map(m => ({
       ...m,
-      dayStartTs: fromISO(m.daystartts),
-      dayEndTs:   fromISO(m.dayendts),
-      stops:  (m.stops  || []).map(stopFromStorage),
-      pauses: Array.isArray(m.pauses) ? m.pauses : [],
+      dayStartTs:        fromISO(m.daystartts),
+      dayEndTs:          fromISO(m.dayendts),
+      stops:             (m.stops || []).map(stopFromStorage),
+      pauses:            Array.isArray(m.pauses) ? m.pauses : [],
+      // v1.03 : dispatch + pause persistés
+      tDispatchNotified: fromISO(m.tdispatchnotified),
+      tDispatchReceived: fromISO(m.tdispatchreceived),
+      isPaused:          m.ispaused === true,
+      tPauseStart:       fromISO(m.tpausestart),
     }));
   } catch (e) { console.warn('[Supabase] Mission load failed:', e.message); return []; }
 }
@@ -98,14 +103,25 @@ async function saveMissionToSupabase(mission) {
       stops:          (mission.stops || []).map(stopToStorage),
       updatedat:      new Date().toISOString()
     };
-    // Inclure les pauses si disponibles (colonne ajoutée par la migration v1.02)
+    // v1.02 : pauses cumulées de la journée
     if (Array.isArray(mission.pauses)) payload.pauses = mission.pauses;
-    let { error } = await supabaseClient
-      .from('missions')
-      .upsert([payload], { onConflict: 'id' });
-    // Retry sans le champ pauses si la colonne n'existe pas encore
-    if (error && 'pauses' in payload && /column.+pauses|pauses.+column/i.test(error.message || '')) {
-      delete payload.pauses;
+    // v1.03 : timestamps dispatch + état pause persistés
+    if ('tDispatchNotified' in mission) payload.tdispatchnotified = toISO(mission.tDispatchNotified);
+    if ('tDispatchReceived' in mission) payload.tdispatchreceived = toISO(mission.tDispatchReceived);
+    if ('isPaused'          in mission) payload.ispaused          = mission.isPaused === true;
+    if ('tPauseStart'       in mission) payload.tpausestart       = toISO(mission.tPauseStart);
+
+    // Colonnes optionnelles (ajoutées par migrations v1.02/v1.03)
+    const OPTIONAL_COLS = ['pauses','tdispatchnotified','tdispatchreceived','ispaused','tpausestart'];
+    let { error } = await supabaseClient.from('missions').upsert([payload], { onConflict: 'id' });
+    // Retry en retirant progressivement les colonnes manquantes
+    let safety = 6;
+    while (error && safety-- > 0) {
+      const msg = error.message || '';
+      const dropped = OPTIONAL_COLS.find(c => c in payload && (msg.includes(c) || new RegExp('column.+' + c + '|' + c + '.+column', 'i').test(msg)));
+      if (!dropped) break;
+      console.warn('[Supabase] Colonne manquante, retry sans :', dropped);
+      delete payload[dropped];
       const retry = await supabaseClient.from('missions').upsert([payload], { onConflict: 'id' });
       error = retry.error;
     }

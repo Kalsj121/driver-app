@@ -67,5 +67,20 @@ DO $$ BEGIN
 END $$;
 
 -- ============================================================
--- Fin de la migration v1.02
+-- Migration v1.03 : persistance du flux dispatch + pause
+-- ============================================================
+-- Timestamps de notification / réception d'instructions (missions actives)
+ALTER TABLE missions ADD COLUMN IF NOT EXISTS tdispatchnotified timestamptz;
+ALTER TABLE missions ADD COLUMN IF NOT EXISTS tdispatchreceived timestamptz;
+
+-- Pause en cours pendant une mission (survit au reload)
+ALTER TABLE missions ADD COLUMN IF NOT EXISTS ispaused    boolean     NOT NULL DEFAULT false;
+ALTER TABLE missions ADD COLUMN IF NOT EXISTS tpausestart timestamptz;
+
+-- Conservation des timestamps dispatch dans les archives
+ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS tdispatchnotified timestamptz;
+ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS tdispatchreceived timestamptz;
+
+-- ============================================================
+-- Fin de la migration v1.03
 -- ============================================================

@@ -96,7 +96,7 @@ textarea.fi{resize:vertical;min-height:72px;}
 .btn-sm-act{padding:6px 14px;font-size:12px;font-weight:600;border:none;border-radius:6px;background:var(--blue);color:#fff;cursor:pointer;}
 
 /* DRIVER GRID */
-.driver-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;}
+.driver-grid{display:flex;flex-direction:column;gap:12px;width:100%;}
 .dcard{background:var(--card);border:1px solid var(--b1);border-radius:14px;padding:15px 17px;}
 .dcard.c-alert{border-color:rgba(163,45,45,0.5);background:var(--rlt);}
 .dcard.c-transit{border-color:rgba(186,117,23,0.4);}
@@ -367,7 +367,7 @@ textarea.fi{resize:vertical;min-height:72px;}
 </div><!-- /main-app -->
 
 <!-- VERSION -->
-<div class="version-footer" id="ver-footer" style="display:none;">Version 1.02 (release: 22 avril 2026) — © Kalsj121</div>
+<div class="version-footer" id="ver-footer" style="display:none;">Version 1.03 (release: 22 avril 2026) — © Kalsj121</div>
 
 <!-- Supabase Library -->
 <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -459,12 +459,12 @@ function switchView(v) {
 // CONSTANTS
 // ============================================================
 const LCA_SITES = ['LCA Nord','LCA Selys'];
-const STEP_LABELS = ['En attente d\'instruction','Attente quai','Quai attribué','À quai','En opération','Opération terminée','CMR reçu','En transit','En pause'];
+const STEP_LABELS = ['En attente d\'instructions','Attente quai','Quai attribué','À quai','En opération','Opération terminée','CMR reçu','En transit','En pause'];
 
 function getStepLabel(d) {
   if (d.isPaused) return 'En pause';
   if (d.awaitingNotify) return 'En attente de notification de disponibilité';
-  if (d.instructionsReceived && !d.ts_arrival) return 'Instructions reçues — en route';
+  if (d.instructionsReceived && !d.ts_arrival) return 'En route vers sa destination';
   if (d.betweenMissions) return 'Disponible — entre missions';
   const s = parseInt(d.step)||0;
   const op = d.operation || '';
@@ -586,6 +586,26 @@ async function fetchDrivers() {
       const todayStr = new Date().toLocaleDateString('fr-BE');
       const activeMissions = allMissions.filter(m => !m.completed && m.date === todayStr);
       drivers = activeMissions.map(missionToDriverStatus).filter(d => d !== null);
+    }
+
+    // Fusionner l'état temps-réel depuis active_drivers (pause / entre missions / dispatch)
+    if (window.supabaseClient) {
+      try {
+        const { data: rows } = await window.supabaseClient.from('active_drivers').select('*');
+        if (Array.isArray(rows)) {
+          window._activeDriverRows = rows;
+          rows.forEach(r => {
+            const match = drivers.find(d => d.driver_name === r.fullname);
+            if (!match) return;
+            // Une pause signalée par active_drivers prévaut sur la mission (pause entre-stops persistée)
+            if (r.is_paused === true && !match.isPaused) {
+              match.isPaused = true;
+              match.step = 8;
+              match.ts_pause_start = r.pause_start || new Date().toISOString();
+            }
+          });
+        }
+      } catch(e) { /* silencieux */ }
     }
   } catch(e) { console.warn('[fetchDrivers]', e.message); }
   renderDashboard();
@@ -861,8 +881,11 @@ async function deleteMessage(msgId) {
 }
 
 function buildDriverDropdown() {
+  // Sources : missions actives, active_drivers (pause, entre-missions, en attente), expéditeurs de messages
+  const activeRows = Array.isArray(window._activeDriverRows) ? window._activeDriverRows : [];
   const driverNames = [...new Set([
     ...drivers.map(d=>d.driver_name),
+    ...activeRows.map(r=>r.fullname),
     ...messages.filter(m=>m.from==='driver').map(m=>m.fromName)
   ].filter(Boolean))].sort();
   ['msg-to','msg-filter'].forEach(id=>{
@@ -984,28 +1007,77 @@ async function loadArchiveList() {
 }
 
 function renderArchiveTable(container, missions) {
-  container.innerHTML = '<table class="reg-table"><thead><tr><th>Date</th><th>Chauffeur</th><th>Plaque tracteur</th><th>Plaque remorque</th><th>Stops</th><th>Durée journée</th><th>Actions</th></tr></thead><tbody>'
-    + missions.map(m => {
-      const startMs = m.dayStartTs || (m.daystartts ? new Date(m.daystartts).getTime() : null);
-      const endMs   = m.dayEndTs   || (m.dayendts   ? new Date(m.dayendts).getTime()   : null);
-      const dur = (startMs && endMs) ? Math.round((endMs - startMs) / 60000) + ' min' : '—';
-      const stops = (m.stops||[]).length;
-      const plateRem = m.plate_remorque || '—';
-      const drv = (m.driver || '').replace(/'/g,"\\'");
-      const dt  = (m.date || '').replace(/'/g,"\\'");
+  // Regrouper par (chauffeur, date) pour éviter les doublons de feuille de route
+  const groups = new Map();
+  missions.forEach(m => {
+    const key = (m.driver || '—') + '||' + (m.date || '—');
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        driver: m.driver || '—',
+        date:   m.date   || '—',
+        plates: new Set(),
+        plateRems: new Set(),
+        ids: [],
+        stops: 0,
+        firstStart: null,
+        lastEnd: null,
+        missionsCount: 0
+      };
+      groups.set(key, g);
+    }
+    if (m.plate) g.plates.add(m.plate);
+    if (m.plate_remorque) g.plateRems.add(m.plate_remorque);
+    g.ids.push(m.id);
+    g.stops += (m.stops || []).length;
+    g.missionsCount += 1;
+    const startMs = m.dayStartTs || (m.daystartts ? new Date(m.daystartts).getTime() : null);
+    const endMs   = m.dayEndTs   || (m.dayendts   ? new Date(m.dayendts).getTime()   : null);
+    if (startMs && (g.firstStart == null || startMs < g.firstStart)) g.firstStart = startMs;
+    if (endMs   && (g.lastEnd   == null || endMs   > g.lastEnd))     g.lastEnd   = endMs;
+  });
+  // Trier par date desc puis chauffeur
+  const rows = Array.from(groups.values()).sort((a,b) => {
+    const parse = s => { const p = (s||'').split('/'); return p.length===3 ? new Date(p[2], p[1]-1, p[0]).getTime() : 0; };
+    const diff = parse(b.date) - parse(a.date);
+    return diff !== 0 ? diff : a.driver.localeCompare(b.driver);
+  });
+
+  container.innerHTML = '<table class="reg-table"><thead><tr><th>Date</th><th>Chauffeur</th><th>Missions</th><th>Plaque(s) tracteur</th><th>Plaque(s) remorque</th><th>Stops</th><th>Durée journée</th><th>Actions</th></tr></thead><tbody>'
+    + rows.map(g => {
+      const dur = (g.firstStart && g.lastEnd) ? Math.round((g.lastEnd - g.firstStart) / 60000) + ' min' : '—';
+      const plates    = g.plates.size    ? Array.from(g.plates).join(', ')    : '—';
+      const plateRems = g.plateRems.size ? Array.from(g.plateRems).join(', ') : '—';
+      const drv = g.driver.replace(/'/g,"\\'");
+      const dt  = g.date.replace(/'/g,"\\'");
+      const idsJson = JSON.stringify(g.ids).replace(/"/g,'&quot;');
       return `<tr>
-        <td>${m.date||'—'}</td>
-        <td>${m.driver||'—'}</td>
-        <td>${m.plate||'—'}</td>
-        <td>${plateRem}</td>
-        <td>${stops}</td>
+        <td>${g.date}</td>
+        <td>${g.driver}</td>
+        <td style="text-align:center;">${g.missionsCount}</td>
+        <td>${plates}</td>
+        <td>${plateRems}</td>
+        <td style="text-align:center;">${g.stops}</td>
         <td>${dur}</td>
         <td style="white-space:nowrap;">
-          <button onclick="openFeuilleDeRoute('${drv}','${dt}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid var(--b2);border-radius:6px;background:none;color:var(--blue);cursor:pointer;margin-right:4px;" title="Générer la feuille de route PDF">📄 Feuille de route</button>
-          <button class="del-btn" onclick="deleteArchiveMission(${m.id})" title="Supprimer">✕</button>
+          <button onclick="openFeuilleDeRoute('${drv}','${dt}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid var(--b2);border-radius:6px;background:none;color:var(--blue);cursor:pointer;margin-right:4px;" title="Générer la feuille de route PDF du jour">📄 Feuille de route</button>
+          <button class="del-btn" onclick="deleteArchiveGroup(${idsJson})" title="Supprimer toutes les missions de ce jour">✕</button>
         </td>
       </tr>`;
     }).join('') + '</tbody></table>';
+}
+
+async function deleteArchiveGroup(ids) {
+  if (!Array.isArray(ids) || !ids.length) return;
+  if (!confirm('Supprimer les ' + ids.length + ' mission(s) archivée(s) de ce jour ?')) return;
+  if (window.supabaseClient) {
+    try {
+      await window.supabaseClient.from('missions_archive').delete().in('id', ids);
+      await window.supabaseClient.from('missions').delete().in('id', ids);
+    } catch(e) { console.warn('[Archive] Group delete failed:', e.message); }
+  }
+  showToast('Mission(s) supprimée(s) ✓');
+  loadArchiveList();
 }
 
 // ============================================================
@@ -1259,13 +1331,11 @@ async function loadAccounts() {
   if (!container) return;
   let accounts = await getDriverAccounts();
   if (!accounts.length) { container.innerHTML='<div class="empty"><p>Aucun compte chauffeur créé.</p></div>'; return; }
-  container.innerHTML = '<table class="acc-table"><thead><tr><th>Login</th><th>Nom</th><th>PDF feuille</th><th>Action</th></tr></thead><tbody>'
+  container.innerHTML = '<table class="acc-table"><thead><tr><th>Login</th><th>Nom</th><th>Action</th></tr></thead><tbody>'
     + accounts.map(a => {
-      const pdfOn = !!a.pdf_allowed;
       return `<tr>
         <td><code>${a.username}</code></td>
         <td>${a.fullname||a.username}</td>
-        <td><button onclick="togglePdfPermission('${a.username}', ${!pdfOn})" style="padding:4px 10px;font-size:11px;font-weight:600;border-radius:6px;cursor:pointer;background:${pdfOn?'var(--glt)':'var(--subcard)'};color:${pdfOn?'var(--green)':'var(--t2)'};border:1px solid ${pdfOn?'rgba(15,110,86,0.3)':'var(--b2)'};">${pdfOn?'✅ Autorisé':'⛔ Bloqué'}</button></td>
         <td><button class="del-btn" onclick="deleteAccount('${a.username}')">✕ Supprimer</button></td>
       </tr>`;
     }).join('') + '</tbody></table>';
