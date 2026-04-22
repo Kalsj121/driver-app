@@ -102,6 +102,7 @@ textarea.fi{resize:vertical;min-height:72px;}
 .dcard.c-transit{border-color:rgba(186,117,23,0.4);}
 .dcard.c-ops{border-color:rgba(77,169,190,0.35);}
 .dcard.c-doc{border-color:rgba(29,158,117,0.4);}
+.dcard.c-pause{border-color:rgba(186,117,23,0.5);background:var(--alt);}
 .dc-top{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px;}
 .dc-name{font-size:14px;font-weight:700;}
 .dc-plate{font-size:11px;color:var(--t2);margin-top:2px;}
@@ -111,6 +112,7 @@ textarea.fi{resize:vertical;min-height:72px;}
 .pp-ops{background:var(--alt);color:#633806;}
 .pp-doc{background:var(--glt);color:#085041;}
 .pp-idle{background:rgba(0,0,0,0.06);color:var(--t2);}
+.pp-pause{background:rgba(186,117,23,0.18);color:#7a4a00;}
 .dc-loc{font-size:13px;font-weight:600;margin-bottom:2px;}
 .dc-sub{font-size:12px;color:var(--t2);margin-bottom:10px;}
 .tgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}
@@ -365,7 +367,7 @@ textarea.fi{resize:vertical;min-height:72px;}
 </div><!-- /main-app -->
 
 <!-- VERSION -->
-<div class="version-footer" id="ver-footer" style="display:none;">Version 1.01 (release: 26 mars 2026) — © Kalsj121</div>
+<div class="version-footer" id="ver-footer" style="display:none;">Version 1.02 (release: 22 avril 2026) — © Kalsj121</div>
 
 <!-- Supabase Library -->
 <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -457,9 +459,13 @@ function switchView(v) {
 // CONSTANTS
 // ============================================================
 const LCA_SITES = ['LCA Nord','LCA Selys'];
-const STEP_LABELS = ['En attente d\'instruction','Attente quai','Quai attribué','À quai','En opération','Opération terminée','CMR reçu','En transit'];
+const STEP_LABELS = ['En attente d\'instruction','Attente quai','Quai attribué','À quai','En opération','Opération terminée','CMR reçu','En transit','En pause'];
 
 function getStepLabel(d) {
+  if (d.isPaused) return 'En pause';
+  if (d.awaitingNotify) return 'En attente de notification de disponibilité';
+  if (d.instructionsReceived && !d.ts_arrival) return 'Instructions reçues — en route';
+  if (d.betweenMissions) return 'Disponible — entre missions';
   const s = parseInt(d.step)||0;
   const op = d.operation || '';
   if (s === 4 && op) return op + ' en cours';
@@ -479,15 +485,67 @@ function missionToDriverStatus(mission) {
   for (let i = stops.length - 1; i >= 0; i--) {
     if (!stops[i].tDepart) { curStop = stops[i]; break; }
   }
-  // Step 0: dispatch waiting (no stops yet, dispatch not received)
-  if (!curStop && stops.length === 0 && !mission.tDispatchReceived) {
+
+  // Pause en cours : priorité absolue sur le step
+  if (mission.isPaused === true) {
+    const now = Date.now();
+    const minJourney = mission.dayStartTs ? Math.floor((now - mission.dayStartTs) / 60000) : null;
+    return {
+      user_id: mission.id, driver_name: mission.driver,
+      plate: mission.plateTracteur||mission.plate||'', plate_remorque: mission.plateRemorque||mission.plate_remorque||'',
+      step: 8, isPaused: true,
+      location: '', operation: '', dock: '',
+      ts_arrival: null, ts_dock_assigned: null, ts_dock_ready: null,
+      ts_ops_start: null, ts_ops_end: null,
+      ts_pause_start: mission.tPauseStart ? new Date(mission.tPauseStart).toISOString() : null,
+      min_wait: null, min_dock: null, min_ops: null, min_journey: minJourney,
+      updated_at: mission.updatedat || new Date().toISOString()
+    };
+  }
+
+  // Step 0: "En attente d'instruction" — seulement APRÈS que le chauffeur a notifié le bureau
+  if (!curStop && stops.length === 0 && mission.tDispatchNotified && !mission.tDispatchReceived) {
     const now = Date.now();
     const minJourney = mission.dayStartTs ? Math.floor((now - new Date(mission.dayStartTs).getTime()) / 60000) : null;
     return {
       user_id: mission.id, driver_name: mission.driver,
       plate: mission.plateTracteur||mission.plate||'', plate_remorque: mission.plateRemorque||mission.plate_remorque||'',
-      step: 0, location: 'En attente d\'instruction', operation: '',
+      step: 0, location: '', operation: '',
       dock: '', ts_arrival: null, ts_dock_assigned: null, ts_dock_ready: null,
+      ts_ops_start: null, ts_ops_end: null,
+      ts_dispatch_notified: new Date(mission.tDispatchNotified).toISOString(),
+      min_wait: null, min_dock: null, min_ops: null, min_journey: minJourney,
+      updated_at: mission.updatedat || new Date().toISOString()
+    };
+  }
+
+  // NOUVEAU : Instructions reçues mais pas encore arrivé au lieu (pas de curStop)
+  if (!curStop && stops.length === 0 && mission.tDispatchReceived) {
+    const now = Date.now();
+    const minJourney = mission.dayStartTs ? Math.floor((now - new Date(mission.dayStartTs).getTime()) / 60000) : null;
+    return {
+      user_id: mission.id, driver_name: mission.driver,
+      plate: mission.plateTracteur||mission.plate||'', plate_remorque: mission.plateRemorque||mission.plate_remorque||'',
+      step: 0, instructionsReceived: true,
+      location: '', operation: '', dock: '',
+      ts_arrival: null, ts_dock_assigned: null, ts_dock_ready: null,
+      ts_ops_start: null, ts_ops_end: null,
+      ts_dispatch_received: mission.tDispatchReceived ? new Date(mission.tDispatchReceived).toISOString() : null,
+      min_wait: null, min_dock: null, min_ops: null, min_journey: minJourney,
+      updated_at: mission.updatedat || new Date().toISOString()
+    };
+  }
+
+  // Journée démarrée mais pas encore notifié → NOUVEAU : afficher explicitement comme "En attente de notification de disponibilité"
+  if (!curStop && stops.length === 0 && !mission.tDispatchNotified && !mission.tDispatchReceived) {
+    const now = Date.now();
+    const minJourney = mission.dayStartTs ? Math.floor((now - new Date(mission.dayStartTs).getTime()) / 60000) : null;
+    return {
+      user_id: mission.id, driver_name: mission.driver,
+      plate: mission.plateTracteur||mission.plate||'', plate_remorque: mission.plateRemorque||mission.plate_remorque||'',
+      step: -1, awaitingNotify: true,
+      location: '', operation: '', dock: '',
+      ts_arrival: null, ts_dock_assigned: null, ts_dock_ready: null,
       ts_ops_start: null, ts_ops_end: null,
       min_wait: null, min_dock: null, min_ops: null, min_journey: minJourney,
       updated_at: mission.updatedat || new Date().toISOString()
@@ -527,7 +585,7 @@ async function fetchDrivers() {
       const allMissions = await window.loadMissionsFromSupabase();
       const todayStr = new Date().toLocaleDateString('fr-BE');
       const activeMissions = allMissions.filter(m => !m.completed && m.date === todayStr);
-      drivers = activeMissions.map(missionToDriverStatus).filter(d => d.step >= 0);
+      drivers = activeMissions.map(missionToDriverStatus).filter(d => d !== null);
     }
   } catch(e) { console.warn('[fetchDrivers]', e.message); }
   renderDashboard();
@@ -570,23 +628,47 @@ async function renderActiveDriversTable() {
   }
 
   const now = Date.now();
+  const todayISO = new Date().toISOString().slice(0,10);
   container.innerHTML = '<table class="reg-table"><thead><tr><th>Chauffeur</th><th>Tracteur</th><th>Remorque</th><th>Dernière activité</th><th>Statut mission</th><th></th></tr></thead><tbody>'
     + all.map(d => {
-      const driver    = drivers.find(dr => dr.driver_name === d.fullname);
-      const stepLabel = driver ? getStepLabel(driver) : 'Journée démarrée';
-      const loc       = driver ? (driver.location || '') : '';
-      const lastSeen  = d.lastseen ? new Date(d.lastseen).toLocaleTimeString('fr-BE',{hour:'2-digit',minute:'2-digit'}) : '—';
-      const minsAgo   = d.lastseen ? Math.floor((now - new Date(d.lastseen).getTime())/60000) : null;
-      const isOnline  = minsAgo !== null && minsAgo < 10;
-      const plateRem  = d.plate_remorque || driver?.plate_remorque || '—';
-      const uname     = d.username || d.fullname || '';
-      return `<tr>
+      const driver      = drivers.find(dr => dr.driver_name === d.fullname);
+      // Pause = vrai si la mission l'indique OU si active_drivers.is_paused est true (pause entre missions)
+      const rowPaused   = d.is_paused === true;
+      const isPaused    = (driver?.isPaused === true) || rowPaused;
+      // Si le chauffeur est entre deux missions (plus de mission active mais toujours connecté)
+      const betweenMiss = !driver && !rowPaused;
+      let rawLabel;
+      if (isPaused) rawLabel = '⏸ En pause';
+      else if (driver) rawLabel = getStepLabel(driver);
+      else if (d.between_missions === true) rawLabel = 'Disponible — entre missions';
+      else rawLabel = 'Journée démarrée';
+      const loc         = (!isPaused && driver) ? (driver.location || '') : '';
+      const lastSeen    = d.lastseen ? new Date(d.lastseen).toLocaleTimeString('fr-BE',{hour:'2-digit',minute:'2-digit'}) : '—';
+      const minsAgo     = d.lastseen ? Math.floor((now - new Date(d.lastseen).getTime())/60000) : null;
+      const isOnline    = minsAgo !== null && minsAgo < 10;
+      const plateRem    = d.plate_remorque || driver?.plate_remorque || '—';
+      const uname       = d.username || d.fullname || '';
+      const dateStr     = new Date().toLocaleDateString('fr-BE');
+      const rowStyle    = isPaused ? 'background:rgba(186,117,23,0.07);' : '';
+      // Infos pause (durée live)
+      let pauseInfo = '';
+      if (rowPaused && d.pause_start) {
+        const pm = Math.floor((now - new Date(d.pause_start).getTime())/60000);
+        pauseInfo = ' <span style="font-size:11px;color:var(--amber);font-weight:600;">· ' + pm + ' min</span>';
+      } else if (driver?.isPaused && driver?.ts_pause_start) {
+        const pm = Math.floor((now - new Date(driver.ts_pause_start).getTime())/60000);
+        pauseInfo = ' <span style="font-size:11px;color:var(--amber);font-weight:600;">· ' + pm + ' min</span>';
+      }
+      return `<tr style="${rowStyle}">
         <td><span class="${isOnline?'online-dot':''}"></span><strong>${d.fullname||d.username||'—'}</strong></td>
         <td>${d.plate||'—'}</td>
         <td>${plateRem}</td>
         <td>${lastSeen}${minsAgo!==null?' (il y a '+minsAgo+' min)':''}</td>
-        <td>${driver?`<strong>${stepLabel}</strong>${loc?' — '+loc:''}`:stepLabel}</td>
-        <td><button onclick="forceEndDay('${uname}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid rgba(163,45,45,0.4);border-radius:6px;background:none;color:var(--red);cursor:pointer;white-space:nowrap;" title="Forcer la fin de journée">⏹ Fin journée</button></td>
+        <td>${rawLabel}${pauseInfo}${loc?' — '+loc:''}</td>
+        <td style="white-space:nowrap;">
+          <button onclick="openFeuilleDeRoute('${(d.fullname||'').replace(/'/g,"\\'")}','${dateStr}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid var(--b2);border-radius:6px;background:none;color:var(--blue);cursor:pointer;margin-right:4px;" title="Générer la feuille de route">📄 Feuille</button>
+          <button onclick="forceEndDay('${uname}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid rgba(163,45,45,0.4);border-radius:6px;background:none;color:var(--red);cursor:pointer;" title="Forcer la fin de journée">⏹ Fin journée</button>
+        </td>
       </tr>`;
     }).join('') + '</tbody></table>';
 }
@@ -677,15 +759,15 @@ function renderDashboard() {
 }
 
 function buildCard(d, threshold) {
-  const step = parseInt(d.step)||0;
+  const step = parseInt(d.step);
   const now = Date.now();
   const e = ts => ts ? Math.floor((now-new Date(ts).getTime())/60000) : null;
   const dur = min => min==null?'—':min<60?min+' min':Math.floor(min/60)+'h'+String(min%60).padStart(2,'0');
-  const pillMap={0:'pp-idle',1:'pp-wait',2:'pp-wait',3:'pp-wait',4:'pp-ops',5:'pp-ops',6:'pp-doc',7:'pp-transit'};
-  const eMap={0:'📋',1:'⏳',2:'🔄',3:'🔄',4:'⚙️',5:'⚙️',6:'📄',7:'🚛'};
+  const pillMap={[-1]:'pp-idle',0:'pp-idle',1:'pp-wait',2:'pp-wait',3:'pp-wait',4:'pp-ops',5:'pp-ops',6:'pp-doc',7:'pp-transit',8:'pp-pause'};
+  const eMap={[-1]:'📡',0:'📋',1:'⏳',2:'🔄',3:'🔄',4:'⚙️',5:'⚙️',6:'📄',7:'🚛',8:'⏸'};
   const pillCls = pillMap[step]||'pp-idle';
   const w = e(d.ts_arrival);
-  const cardCls = step===1&&w>=threshold?'dcard c-alert':step===7?'dcard c-transit':(step===4||step===5)?'dcard c-ops':step===6?'dcard c-doc':'dcard';
+  const cardCls = d.isPaused?'dcard c-pause':d.awaitingNotify?'dcard':step===1&&w>=threshold?'dcard c-alert':step===7?'dcard c-transit':(step===4||step===5)?'dcard c-ops':step===6?'dcard c-doc':'dcard';
   const locLine = d.location
     ? `<div class="dc-loc">${step===7?'🚛 ':'📍 '}${d.location}${d.dock?' · Quai '+d.dock:''}</div><div class="dc-sub">${d.operation||''}</div>`
     : '<div class="dc-sub">—</div>';
@@ -695,6 +777,9 @@ function buildCard(d, threshold) {
   if(step===4&&d.ts_ops_start){const op=e(d.ts_ops_start);boxes.push({l:'Opération',v:dur(op),cls:op>60?'tv-r':op>30?'tv-a':'tv-b',id:'top-'+d.user_id});}
   if(step===5&&d.ts_ops_start){const op=e(d.ts_ops_start);boxes.push({l:'Opération',v:dur(op),cls:'tv-b',id:'top-'+d.user_id});boxes.push({l:'Doc',v:dur(e(d.ts_ops_end)),cls:'tv-g',id:'tdc-'+d.user_id});}
   if(step===7){const srv=d.updated_at?e(d.updated_at):null;boxes.push({l:'Transit',v:dur(srv),cls:'tv-a',id:'ttr-'+d.user_id});}
+  if(d.isPaused&&d.ts_pause_start){boxes.push({l:'Pause',v:dur(e(d.ts_pause_start)),cls:'tv-a',id:'tps-'+d.user_id});}
+  if(step===0&&d.ts_dispatch_notified&&!d.instructionsReceived){boxes.push({l:'Attente instr.',v:dur(e(d.ts_dispatch_notified)),cls:'tv-b',id:'tdp-'+d.user_id});}
+  if(d.instructionsReceived&&d.ts_dispatch_received){boxes.push({l:'En route',v:dur(e(d.ts_dispatch_received)),cls:'tv-a',id:'trr-'+d.user_id});}
   if(d.min_journey)boxes.push({l:'Journée',v:dur(d.min_journey),cls:'tv-gr'});
   const timerHtml = boxes.length
     ? '<div class="tgrid">'+boxes.slice(0,3).map(b=>'<div class="tbox"><div class="tb-l">'+b.l+'</div><div class="tb-v '+b.cls+'"'+(b.id?' id="'+b.id+'"':'')+'>'+b.v+'</div></div>').join('')+'</div>'
@@ -729,6 +814,9 @@ function liveTick() {
     if(step===2&&d.ts_dock_assigned)up('tdk-'+d.user_id,dur(e(d.ts_dock_assigned)));
     if((step===4||step===5)&&d.ts_ops_start){const op=e(d.ts_ops_start);up('top-'+d.user_id,dur(op),op>60?'tv-r':op>30?'tv-a':'tv-b');}
     if(step===7&&d.updated_at)up('ttr-'+d.user_id,dur(e(d.updated_at)));
+    if(d.isPaused&&d.ts_pause_start)up('tps-'+d.user_id,dur(e(d.ts_pause_start)));
+    if(step===0&&d.ts_dispatch_notified&&!d.instructionsReceived)up('tdp-'+d.user_id,dur(e(d.ts_dispatch_notified)));
+    if(d.instructionsReceived&&d.ts_dispatch_received)up('trr-'+d.user_id,dur(e(d.ts_dispatch_received)));
   });
 }
 
@@ -830,7 +918,9 @@ function renderMessages() {
   const thread = document.getElementById('msg-thread');
   if (!thread) return;
   if (!shown.length) { thread.innerHTML='<div class="empty"><p>Aucun message.</p></div>'; return; }
-  thread.innerHTML = [...shown].reverse().map(m=>{
+  // Ordre chronologique : ancien → récent (le plus récent en bas, style messagerie)
+  const sorted = [...shown].sort((a,b) => (a.ts||0) - (b.ts||0));
+  thread.innerHTML = sorted.map(m=>{
     const isBureau = m.from==='bureau';
     const cls = isBureau?'msg-bubble msg-bureau':'msg-bubble msg-driver';
     const who = isBureau?('📨 '+m.fromName+' → '+(m.toLabel||m.to)):('🚛 '+m.fromName);
@@ -845,6 +935,13 @@ function renderMessages() {
   }).join('');
   messages.forEach(m=>{ if(m.from==='driver') m.read=true; });
   saveMsgs();
+  // Scroll automatique vers le dernier message (en bas)
+  setTimeout(() => {
+    const last = thread.lastElementChild;
+    if (last && typeof last.scrollIntoView === 'function') {
+      last.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    }
+  }, 30);
 }
 
 function exportMsgsCSV(){
@@ -887,15 +984,217 @@ async function loadArchiveList() {
 }
 
 function renderArchiveTable(container, missions) {
-  container.innerHTML = '<table class="reg-table"><thead><tr><th>Date</th><th>Chauffeur</th><th>Plaque tracteur</th><th>Plaque remorque</th><th>Stops</th><th>Durée journée</th><th></th></tr></thead><tbody>'
+  container.innerHTML = '<table class="reg-table"><thead><tr><th>Date</th><th>Chauffeur</th><th>Plaque tracteur</th><th>Plaque remorque</th><th>Stops</th><th>Durée journée</th><th>Actions</th></tr></thead><tbody>'
     + missions.map(m => {
-      const dur = (m.dayStartTs && m.dayEndTs)
-        ? Math.round((new Date(m.dayEndTs||m.dayendts) - new Date(m.dayStartTs||m.daystartts)) / 60000) + ' min'
-        : '—';
+      const startMs = m.dayStartTs || (m.daystartts ? new Date(m.daystartts).getTime() : null);
+      const endMs   = m.dayEndTs   || (m.dayendts   ? new Date(m.dayendts).getTime()   : null);
+      const dur = (startMs && endMs) ? Math.round((endMs - startMs) / 60000) + ' min' : '—';
       const stops = (m.stops||[]).length;
       const plateRem = m.plate_remorque || '—';
-      return `<tr><td>${m.date||'—'}</td><td>${m.driver||'—'}</td><td>${m.plate||'—'}</td><td>${plateRem}</td><td>${stops}</td><td>${dur}</td><td><button class="del-btn" onclick="deleteArchiveMission(${m.id})">✕</button></td></tr>`;
+      const drv = (m.driver || '').replace(/'/g,"\\'");
+      const dt  = (m.date || '').replace(/'/g,"\\'");
+      return `<tr>
+        <td>${m.date||'—'}</td>
+        <td>${m.driver||'—'}</td>
+        <td>${m.plate||'—'}</td>
+        <td>${plateRem}</td>
+        <td>${stops}</td>
+        <td>${dur}</td>
+        <td style="white-space:nowrap;">
+          <button onclick="openFeuilleDeRoute('${drv}','${dt}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid var(--b2);border-radius:6px;background:none;color:var(--blue);cursor:pointer;margin-right:4px;" title="Générer la feuille de route PDF">📄 Feuille de route</button>
+          <button class="del-btn" onclick="deleteArchiveMission(${m.id})" title="Supprimer">✕</button>
+        </td>
+      </tr>`;
     }).join('') + '</tbody></table>';
+}
+
+// ============================================================
+// FEUILLE DE ROUTE — génération PDF côté bureau
+// ============================================================
+async function openFeuilleDeRoute(driverName, dateStr) {
+  if (!driverName) { showToast('Nom du chauffeur manquant.'); return; }
+  if (!window.supabaseClient) { showToast('Supabase non disponible.'); return; }
+
+  try {
+    // 1. Récupérer toutes les missions du chauffeur pour la date donnée
+    // On cherche dans les archives + dans les missions actives
+    const { data: archiveData } = await window.supabaseClient
+      .from('missions_archive').select('*')
+      .eq('driver', driverName).eq('date', dateStr);
+    const { data: activeData } = await window.supabaseClient
+      .from('missions').select('*')
+      .eq('driver', driverName).eq('date', dateStr);
+
+    // Fusion (préférer archive si les deux existent pour même id)
+    const byId = new Map();
+    (activeData || []).forEach(m => byId.set(m.id, m));
+    (archiveData || []).forEach(m => byId.set(m.id, m));
+    const allMissions = Array.from(byId.values()).sort((a,b) => {
+      const ta = a.daystartts ? new Date(a.daystartts).getTime() : 0;
+      const tb = b.daystartts ? new Date(b.daystartts).getTime() : 0;
+      return ta - tb;
+    });
+
+    if (!allMissions.length) {
+      showToast('Aucune mission trouvée pour ce chauffeur à cette date.');
+      return;
+    }
+
+    // 2. Récupérer le compte chauffeur (full name, username)
+    let accountInfo = { fullName: driverName, username: '' };
+    try {
+      const { data: accs } = await window.supabaseClient
+        .from('driver_accounts').select('*').eq('fullname', driverName);
+      if (accs && accs[0]) { accountInfo = { fullName: accs[0].fullname, username: accs[0].username }; }
+    } catch(e) {}
+
+    // 3. Agréger les pauses de toutes les missions de la journée (dédup par tStart)
+    const pauseMap = new Map();
+    allMissions.forEach(m => {
+      (m.pauses || []).forEach(p => {
+        const key = p.tStart || p.tstart || JSON.stringify(p);
+        pauseMap.set(key, p);
+      });
+    });
+    const allPauses = Array.from(pauseMap.values()).sort((a,b) => {
+      const ta = a.tStart || a.tstart || 0;
+      const tb = b.tStart || b.tstart || 0;
+      return new Date(ta).getTime() - new Date(tb).getTime();
+    });
+
+    // 4. Construire et ouvrir la feuille de route
+    const html = buildFeuilleDeRouteHTML(allMissions, allPauses, accountInfo, dateStr);
+    const w = window.open('', '_blank');
+    if (!w) { showToast('Autorisez les pop-ups pour générer le PDF.'); return; }
+    w.document.write(html);
+    w.document.close();
+    setTimeout(() => { w.focus(); w.print(); }, 700);
+  } catch(e) {
+    console.error('[FeuilleDeRoute]', e);
+    showToast('Erreur : ' + e.message);
+  }
+}
+
+function buildFeuilleDeRouteHTML(allMissions, pauses, driver, dateStr) {
+  const tsF = ts => {
+    if (!ts) return '—';
+    const d = typeof ts === 'number' ? new Date(ts) : new Date(ts);
+    return d.toLocaleTimeString('fr-BE',{hour:'2-digit',minute:'2-digit'});
+  };
+  const durF = min => (min==null||isNaN(min)) ? '—' : (min<60 ? min+' min' : Math.floor(min/60)+'h'+String(min%60).padStart(2,'0'));
+  const dateObj = (() => {
+    // Support date format "DD/MM/YYYY" ou ISO
+    if (!dateStr) return new Date();
+    const parts = dateStr.split('/');
+    if (parts.length === 3) return new Date(parts[2], parts[1]-1, parts[0]);
+    return new Date(dateStr);
+  })();
+  const dateLabel = dateObj.toLocaleDateString('fr-BE',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
+  const getMs = v => !v ? null : (typeof v === 'number' ? v : new Date(v).getTime());
+
+  let missionsHTML = '';
+  allMissions.forEach((m, mi) => {
+    const tracteur = m.plateTracteur || m.plate || '—';
+    const remorque = m.plateRemorque || m.plate_remorque || '—';
+    const startMs = getMs(m.daystartts || m.dayStartTs);
+    const endMs   = getMs(m.dayendts   || m.dayEndTs);
+    const dispatchNotifMs = getMs(m.tDispatchNotified);
+    const dispatchRecMs   = getMs(m.tDispatchReceived);
+    const dispatchWait = (dispatchNotifMs && dispatchRecMs) ? durF(Math.round((dispatchRecMs - dispatchNotifMs)/60000)) : '—';
+    const stops = (m.stops || []);
+    const stopsRows = stops.map((s,si) => {
+      const arr  = getMs(s.tArrival);
+      const docT = getMs(s.tDoc);
+      const opsS = getMs(s.tOpsStart);
+      const total = (arr && docT) ? Math.round((docT - arr)/60000) : null;
+      const cargoStr = (s.cargo||[]).map(c=>c.type==='uld'?(c.uld||'ULD'):((c.pieces||'')+'pc '+(c.awb||''))).join(', ')||'—';
+      return `<tr>
+        <td>${si+1}</td><td>${s.location||'—'}</td><td>${s.operation||'—'}</td>
+        <td>${tsF(s.tArrival)}</td><td>${s.dock||'—'}</td><td>${durF(s.minWait)}</td>
+        <td>${tsF(s.tOpsStart)}</td><td>${durF(s.minOps)}</td>
+        <td>${tsF(s.tDoc)}</td><td>${durF(total??s.minTotal)}</td>
+        <td>${cargoStr}</td>
+        <td>${s.comment||'—'}</td></tr>`;
+    }).join('');
+    const dayDur = (startMs && endMs) ? durF(Math.round((endMs - startMs)/60000)) : '—';
+    missionsHTML += `<div class="mb"><h3>Mission ${mi+1}</h3>
+      <table class="it">
+        <tr><td><b>Tracteur</b></td><td>${tracteur}</td><td><b>Remorque</b></td><td>${remorque}</td></tr>
+        <tr><td><b>Démarrage</b></td><td>${tsF(startMs)}</td><td><b>Fin</b></td><td>${endMs?tsF(endMs):'—'}</td></tr>
+        <tr><td><b>Attente instruction</b></td><td>${dispatchWait}</td><td><b>Durée mission</b></td><td>${dayDur}</td></tr>
+      </table>
+      ${stopsRows ? `<table class="st"><thead><tr><th>#</th><th>Lieu</th><th>Opération</th><th>Arrivée</th><th>Quai</th><th>Att.quai</th><th>Déb.opé</th><th>Dur.opé</th><th>CMR</th><th>Total</th><th>Fret</th><th>Commentaire</th></tr></thead><tbody>${stopsRows}</tbody></table>` : '<p style="color:#888;font-style:italic;font-size:11px;">Aucun stop.</p>'}
+    </div>`;
+  });
+
+  let pausesHTML = '';
+  if (pauses && pauses.length) {
+    const pr = pauses.map((p,i) => {
+      const s = p.tStart || p.tstart;
+      const e = p.tEnd   || p.tend;
+      const m = p.minPause || p.min_pause || (s && e ? Math.round((new Date(e).getTime() - new Date(s).getTime())/60000) : null);
+      return `<tr><td>${i+1}</td><td>${tsF(s)}</td><td>${e?tsF(e):'En cours'}</td><td>${durF(m)}</td></tr>`;
+    }).join('');
+    const totalPauses = pauses.reduce((a,p) => a + (p.minPause || p.min_pause || 0), 0);
+    pausesHTML = `<div class="mb"><h3>Pauses de la journée (${pauses.length} — total ${durF(totalPauses)})</h3>
+      <table class="st"><thead><tr><th>#</th><th>Début</th><th>Fin</th><th>Durée</th></tr></thead><tbody>${pr}</tbody></table></div>`;
+  } else {
+    pausesHTML = '<div class="mb"><h3>Pauses de la journée</h3><p style="color:#888;font-style:italic;font-size:11px;">Aucune pause enregistrée.</p></div>';
+  }
+
+  const firstM = allMissions[0], lastM = allMissions[allMissions.length-1];
+  const firstStart = getMs(firstM?.daystartts || firstM?.dayStartTs);
+  const lastEnd    = getMs(lastM?.dayendts   || lastM?.dayEndTs);
+  const totalDay = (firstStart && lastEnd) ? durF(Math.round((lastEnd - firstStart)/60000)) : '—';
+  const totalStops = allMissions.reduce((a,m)=>a+(m.stops||[]).length,0);
+  const totalPausesMin = pauses.reduce((a,p)=>a+(p.minPause||p.min_pause||0),0);
+
+  return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+<title>Feuille de route — ${driver.fullName||driver.username}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:Arial,sans-serif;font-size:11px;color:#222;padding:20px;}
+h1{font-size:20px;color:#1a5c6e;}
+h2{font-size:13px;color:#666;font-weight:normal;margin-bottom:18px;}
+h3{font-size:13px;font-weight:700;color:#1a5c6e;margin:16px 0 8px;border-bottom:1px solid #cde8ef;padding-bottom:4px;}
+.hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #4da9be;padding-bottom:12px;margin-bottom:20px;}
+.hdr-r{text-align:right;font-size:11px;color:#666;}
+.hdr-r div{margin-bottom:2px;}
+.it{width:100%;border-collapse:collapse;margin-bottom:10px;}
+.it td{padding:5px 8px;border:1px solid #ddd;}
+.it td:first-child,.it td:nth-child(3){background:#f5f5f5;font-weight:600;width:140px;}
+.st{width:100%;border-collapse:collapse;font-size:10px;margin-bottom:10px;}
+.st th{background:#4da9be;color:#fff;padding:5px 4px;text-align:left;}
+.st td{padding:4px;border:1px solid #e0e0e0;}
+.st tr:nth-child(even) td{background:#f9f9f9;}
+.mb{margin-bottom:22px;page-break-inside:avoid;}
+.sum{background:#f0f8fb;border:1px solid #4da9be;border-radius:6px;padding:12px 16px;margin-top:18px;}
+.sum div{margin-bottom:4px;}
+.sum b{display:inline-block;width:180px;}
+.bureau-tag{display:inline-block;background:#4da9be;color:#fff;padding:2px 10px;border-radius:99px;font-size:10px;font-weight:700;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em;}
+@media print{body{padding:10px;}.mb{page-break-inside:avoid;}}
+</style></head><body>
+<div class="hdr">
+  <div>
+    <div class="bureau-tag">Émis par le bureau</div>
+    <h1>Feuille de route</h1>
+    <h2>${dateLabel}</h2>
+  </div>
+  <div class="hdr-r">
+    <div><b>Chauffeur :</b> ${driver.fullName||driver.username||'—'}</div>
+    <div><b>Identifiant :</b> ${driver.username||'—'}</div>
+    <div><b>Durée totale :</b> ${totalDay}</div>
+    <div style="margin-top:6px;font-size:10px;color:#999;">Généré le ${new Date().toLocaleString('fr-BE')}</div>
+  </div>
+</div>
+${missionsHTML}${pausesHTML}
+<div class="sum">
+  <div><b>Missions :</b> ${allMissions.length}</div>
+  <div><b>Stops total :</b> ${totalStops}</div>
+  <div><b>Pauses :</b> ${pauses.length > 0 ? pauses.length + ' (' + durF(totalPausesMin) + ')' : 'Aucune'}</div>
+  <div><b>Durée journée :</b> ${totalDay}</div>
+</div>
+</body></html>`;
 }
 
 async function deleteArchiveMission(id) {
@@ -961,12 +1260,15 @@ async function loadAccounts() {
   let accounts = await getDriverAccounts();
   if (!accounts.length) { container.innerHTML='<div class="empty"><p>Aucun compte chauffeur créé.</p></div>'; return; }
   container.innerHTML = '<table class="acc-table"><thead><tr><th>Login</th><th>Nom</th><th>PDF feuille</th><th>Action</th></tr></thead><tbody>'
-    + accounts.map(a => `<tr>
-      <td><code>${a.username}</code></td>
-      <td>${a.fullname||a.username}</td>
-      <td><button onclick="togglePdfPermission('${a.username}', ${!a.pdf_allowed})" style="padding:4px 10px;font-size:11px;font-weight:600;border-radius:6px;cursor:pointer;background:${a.pdf_allowed?'var(--glt)':'var(--subcard)'};color:${a.pdf_allowed?'var(--green)':'var(--t2)'};border:1px solid ${a.pdf_allowed?'rgba(15,110,86,0.3)':'var(--b2)'};">${a.pdf_allowed?'✅ Autorisé':'⛔ Bloqué'}</button></td>
-      <td><button class="del-btn" onclick="deleteAccount('${a.username}')">✕ Supprimer</button></td>
-    </tr>`).join('') + '</tbody></table>';
+    + accounts.map(a => {
+      const pdfOn = !!a.pdf_allowed;
+      return `<tr>
+        <td><code>${a.username}</code></td>
+        <td>${a.fullname||a.username}</td>
+        <td><button onclick="togglePdfPermission('${a.username}', ${!pdfOn})" style="padding:4px 10px;font-size:11px;font-weight:600;border-radius:6px;cursor:pointer;background:${pdfOn?'var(--glt)':'var(--subcard)'};color:${pdfOn?'var(--green)':'var(--t2)'};border:1px solid ${pdfOn?'rgba(15,110,86,0.3)':'var(--b2)'};">${pdfOn?'✅ Autorisé':'⛔ Bloqué'}</button></td>
+        <td><button class="del-btn" onclick="deleteAccount('${a.username}')">✕ Supprimer</button></td>
+      </tr>`;
+    }).join('') + '</tbody></table>';
 }
 
 async function getDriverAccounts() {
@@ -1000,9 +1302,17 @@ async function createAccount() {
 }
 
 async function togglePdfPermission(username, newVal) {
-  if (!window.supabaseClient) return;
+  if (!window.supabaseClient) { showToast('Supabase non disponible.'); return; }
   try {
-    await window.supabaseClient.from('driver_accounts').update({ pdf_allowed: newVal }).eq('username', username);
+    const { error } = await window.supabaseClient
+      .from('driver_accounts')
+      .update({ pdf_allowed: newVal })
+      .eq('username', username);
+    if (error) {
+      showToast('Erreur mise à jour PDF : ' + error.message);
+      console.error('[togglePdfPermission]', error);
+      return;
+    }
     showToast((newVal ? '✅ PDF autorisé' : '⛔ PDF bloqué') + ' pour ' + username);
     loadAccounts();
   } catch(e) { showToast('Erreur : ' + e.message); }

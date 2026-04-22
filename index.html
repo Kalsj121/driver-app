@@ -279,13 +279,9 @@ select.fi-locked{pointer-events:none;opacity:.7;}
         <button class="btn ba" onclick="endPause()">▶ Reprendre — fin de pause</button>
       </div>
     </div>
-    <!-- PDF Banner (visible at end of day if allowed) -->
-    <div id="pdf-banner" style="display:none;margin-top:8px;">
-      <div class="card" style="border-color:var(--green);background:var(--glt);">
-        <div class="ctit" style="color:var(--green);">Feuille de route disponible</div>
-        <p style="font-size:13px;color:var(--t2);margin-bottom:12px;">Téléchargez le récapitulatif de votre journée.</p>
-        <button class="btn bg" onclick="downloadDayPDF()">📄 Télécharger ma feuille de route</button>
-      </div>
+    <!-- END DAY section (visible after at least one mission is finished) -->
+    <div id="end-day-section" style="display:none;margin-top:8px;">
+      <button class="btn bo" onclick="document.getElementById('end-modal').classList.add('open')" style="color:var(--red);border-color:rgba(163,45,45,0.4);">⏹ Terminer la journée</button>
     </div>
   </div>
 
@@ -297,8 +293,8 @@ select.fi-locked{pointer-events:none;opacity:.7;}
     <!-- Step 0: disponibilité / attente instruction -->
     <div id="f0" style="display:none;">
       <div class="card" style="border-color:var(--blue);">
-        <div class="ctit" style="color:var(--blue);">En attente d'instruction</div>
-        <p style="font-size:13px;color:var(--t2);margin-bottom:14px;">Signalez votre disponibilité au bureau pour recevoir vos instructions.</p>
+        <div class="ctit" id="f0-title" style="color:var(--blue);">Notification de disponibilité</div>
+        <p id="f0-subtitle" style="font-size:13px;color:var(--t2);margin-bottom:14px;">Signalez votre disponibilité au bureau pour recevoir vos instructions.</p>
         <div id="f0-notify-area">
           <button class="btn bp" onclick="doDispatchNotify()">✅ J'ai notifié le bureau — je suis disponible</button>
         </div>
@@ -476,7 +472,7 @@ select.fi-locked{pointer-events:none;opacity:.7;}
 <div class="toast" id="toast"></div>
 
 <!-- VERSION FOOTER -->
-<div class="version-footer">Version 1.01 (release: 26 mars 2026) — © Kalsj121</div>
+<div class="version-footer">Version 1.02 (release: 22 avril 2026) — © Kalsj121</div>
 
 </div><!-- /main-app -->
 
@@ -559,7 +555,7 @@ async function doLogin() {
   }
 
   // Connexion réussie
-  currentDriver = { username: login, fullName: account.fullname || account.username, plateTracteur, plateRemorque, pdfAllowed: account.pdf_allowed === true };
+  currentDriver = { username: login, fullName: account.fullname || account.username, plateTracteur, plateRemorque, pdfAllowed: !!account.pdf_allowed };
   localStorage.setItem('lca_current_driver', JSON.stringify(currentDriver));
 
   // Pré-remplir les champs chauffeur (grisés)
@@ -605,7 +601,6 @@ let ticker   = null;
 let dayStart = null;
 let dayPauses = []; // [{tStart, tEnd, minPause}]
 let pauseActive = false;
-let _pdfData = null;
 
 async function initMissions() {
   if (window.missionsFromSupabase && window.missionsFromSupabase.length > 0) {
@@ -657,8 +652,16 @@ function setStep(s) {
   renderTimeline();
   if(s>=0&&s<=8) show('f'+s, true);
   if(s===0) {
-    if(active?.tDispatchNotified) { show('f0-notify-area', false); show('f0-wait-area', true); }
-    else { show('f0-notify-area', true); show('f0-wait-area', false); }
+    const title = $('f0-title'), sub = $('f0-subtitle');
+    if(active?.tDispatchNotified) {
+      show('f0-notify-area', false); show('f0-wait-area', true);
+      if(title) title.textContent = 'En attente d\'instruction';
+      if(sub)   sub.textContent   = 'Le bureau a été notifié. En attente d\'instructions…';
+    } else {
+      show('f0-notify-area', true); show('f0-wait-area', false);
+      if(title) title.textContent = 'Notification de disponibilité';
+      if(sub)   sub.textContent   = 'Signalez votre disponibilité au bureau pour recevoir vos instructions.';
+    }
   }
 }
 
@@ -780,8 +783,8 @@ function startDay() {
   if (btnStart) btnStart.textContent = '▶ Journée en cours…';
 
   show('ph0', false); show('ph-mission', true);
-  show('pdf-banner', false); _pdfData = null;
   show('pause-section', false);
+  show('end-day-section', false);
   $('dayhdr').style.display = '';
   startTicker();
   setStep(0);
@@ -848,10 +851,10 @@ async function doDriverLogout() {
     const username = currentDriver?.username;
     if (username) await removeActiveDriver(username);
   }
-  currentDriver = null; pauseActive = false; dayPauses = []; _pdfData = null;
+  currentDriver = null; pauseActive = false; dayPauses = [];
   try { localStorage.removeItem('lca_current_driver'); } catch(e) {}
   show('ph-mission', false); show('ph0', true);
-  show('pause-section', false); show('pause-active-panel', false); show('pdf-banner', false);
+  show('pause-section', false); show('pause-active-panel', false); show('end-day-section', false);
   $('dayhdr').style.display = 'none'; $('dayhdr').textContent = '00:00:00';
   $('stops-tl').innerHTML = ''; $('live-banner').innerHTML = '';
   for (let i = 0; i <= 8; i++) show('f' + i, false);
@@ -886,11 +889,16 @@ function doDispatchReceived() {
 
 function startPause() {
   pauseActive = true;
-  dayPauses.push({tStart: Date.now(), tEnd: null, minPause: null});
+  const tStart = Date.now();
+  dayPauses.push({tStart, tEnd: null, minPause: null});
+  if (active) { active.isPaused = true; active.tPauseStart = tStart; syncActive(); }
   show('pause-section', false);
   show('pause-active-panel', true);
+  show('end-day-section', false);
   const btnStart = document.getElementById('btn-start-day');
   if(btnStart) btnStart.disabled = true;
+  // Notifier le bureau en temps réel
+  updateActiveDriverState({ is_paused: true, pause_start: tStart });
   toast('Pause démarrée ⏸');
 }
 
@@ -898,87 +906,27 @@ function endPause() {
   const p = dayPauses[dayPauses.length-1];
   if(p) { p.tEnd = Date.now(); p.minPause = ms2min(p.tEnd - p.tStart); }
   pauseActive = false;
+  if (active) { active.isPaused = false; active.tPauseStart = null; syncActive(); }
   show('pause-active-panel', false);
-  show('pause-section', true);
+  // Si le chauffeur est entre missions, il retrouve l'écran ph0 normal
+  if (!active) {
+    show('pause-section', true);
+    show('end-day-section', true);
+  }
   const btnStart = document.getElementById('btn-start-day');
   if(btnStart) btnStart.disabled = false;
+  updateActiveDriverState({ is_paused: false, pause_start: null });
   toast('Pause terminée ✓ — ' + (p?.minPause||0) + ' min');
 }
 
-function showPDFDownloadBanner(missions, pauses, driver) {
-  _pdfData = {missions, pauses, driver};
-  show('pdf-banner', true);
-}
-
-function downloadDayPDF() {
-  if (!_pdfData) { toast('Aucune donnée PDF disponible.', true); return; }
-  const {missions, pauses, driver} = _pdfData;
-  const html = buildFeuilleDeRouteHTML(missions, pauses, driver);
-  const w = window.open('', '_blank');
-  if (!w) { toast('Autorisez les pop-ups pour télécharger le PDF.', true); return; }
-  w.document.write(html);
-  w.document.close();
-  setTimeout(() => { w.focus(); w.print(); }, 500);
-}
-
-function buildFeuilleDeRouteHTML(allMissions, pauses, driver) {
-  const tsF = ts => ts ? new Date(ts).toLocaleTimeString('fr-BE',{hour:'2-digit',minute:'2-digit'}) : '—';
-  const durF = min => (min==null||isNaN(min)) ? '—' : (min<60 ? min+' min' : Math.floor(min/60)+'h'+String(min%60).padStart(2,'0'));
-  const today = new Date().toLocaleDateString('fr-BE',{weekday:'long',year:'numeric',month:'long',day:'numeric'});
-  let missionsHTML = '';
-  allMissions.forEach((m, mi) => {
-    const tracteur = m.plateTracteur || m.plate || '—';
-    const remorque = m.plateRemorque || m.plate_remorque || '—';
-    const dispatchWait = m.minDispatch != null ? durF(m.minDispatch) : '—';
-    let stopsRows = (m.stops||[]).map((s,si) => `<tr>
-      <td>${si+1}</td><td>${s.location||'—'}</td><td>${s.operation||'—'}</td>
-      <td>${tsF(s.tArrival)}</td><td>${s.dock||'—'}</td><td>${durF(s.minWait)}</td>
-      <td>${tsF(s.tOpsStart)}</td><td>${durF(s.minOps)}</td>
-      <td>${tsF(s.tDoc)}</td><td>${durF(s.minTotal)}</td>
-      <td>${(s.cargo||[]).map(c=>c.type==='uld'?(c.uld||'ULD'):((c.pieces||'')+'pc '+(c.awb||''))).join(', ')||'—'}</td>
-      <td>${s.comment||'—'}</td></tr>`).join('');
-    const dayDur = (m.dayStartTs && m.dayEndTs) ? durF(Math.round((m.dayEndTs-m.dayStartTs)/60000)) : '—';
-    missionsHTML += `<div class="mb"><h3>Mission ${mi+1}</h3>
-      <table class="it"><tr><td><b>Tracteur</b></td><td>${tracteur}</td><td><b>Remorque</b></td><td>${remorque}</td></tr>
-      <tr><td><b>Démarrage</b></td><td>${tsF(m.dayStartTs)}</td><td><b>Fin</b></td><td>${m.dayEndTs?tsF(m.dayEndTs):'—'}</td></tr>
-      <tr><td><b>Attente instruction</b></td><td>${dispatchWait}</td><td><b>Durée mission</b></td><td>${dayDur}</td></tr></table>
-      ${stopsRows?`<table class="st"><thead><tr><th>#</th><th>Lieu</th><th>Opération</th><th>Arrivée</th><th>Quai</th><th>Att.quai</th><th>Déb.opé</th><th>Dur.opé</th><th>CMR</th><th>Total</th><th>Fret</th><th>Commentaire</th></tr></thead><tbody>${stopsRows}</tbody></table>`:'<p style="color:#888;font-style:italic;font-size:11px;">Aucun stop.</p>'}</div>`;
-  });
-  let pausesHTML = '';
-  if (pauses&&pauses.length) {
-    const pr = pauses.map((p,i)=>`<tr><td>${i+1}</td><td>${tsF(p.tStart)}</td><td>${p.tEnd?tsF(p.tEnd):'En cours'}</td><td>${durF(p.minPause)}</td></tr>`).join('');
-    pausesHTML = `<div class="mb"><h3>Pauses</h3><table class="st"><thead><tr><th>#</th><th>Début</th><th>Fin</th><th>Durée</th></tr></thead><tbody>${pr}</tbody></table></div>`;
-  }
-  const firstM = allMissions[0], lastM = allMissions[allMissions.length-1];
-  const totalDay = (firstM?.dayStartTs&&lastM?.dayEndTs) ? durF(Math.round((lastM.dayEndTs-firstM.dayStartTs)/60000)) : '—';
-  return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
-<title>Feuille de route — ${driver.fullName||driver.username}</title>
-<style>*{box-sizing:border-box;margin:0;padding:0;}body{font-family:Arial,sans-serif;font-size:11px;color:#222;padding:20px;}
-h1{font-size:18px;color:#1a5c6e;}h2{font-size:12px;color:#666;font-weight:normal;margin-bottom:18px;}
-h3{font-size:13px;font-weight:700;color:#1a5c6e;margin:16px 0 8px;border-bottom:1px solid #cde8ef;padding-bottom:4px;}
-.hdr{display:flex;justify-content:space-between;border-bottom:2px solid #4da9be;padding-bottom:12px;margin-bottom:20px;}
-.hdr-r{text-align:right;font-size:11px;color:#666;}.hdr-r div{margin-bottom:2px;}
-.it{width:100%;border-collapse:collapse;margin-bottom:10px;}.it td{padding:4px 8px;border:1px solid #ddd;}
-.it td:first-child,.it td:nth-child(3){background:#f5f5f5;font-weight:600;width:130px;}
-.st{width:100%;border-collapse:collapse;font-size:10px;margin-bottom:10px;}
-.st th{background:#4da9be;color:#fff;padding:5px 4px;text-align:left;}
-.st td{padding:4px;border:1px solid #e0e0e0;}.st tr:nth-child(even) td{background:#f9f9f9;}
-.mb{margin-bottom:20px;page-break-inside:avoid;}
-.sum{background:#f0f8fb;border:1px solid #4da9be;border-radius:6px;padding:10px 14px;margin-top:16px;}
-.sum div{margin-bottom:3px;}.sum b{display:inline-block;width:160px;}
-@media print{body{padding:10px;}}</style></head><body>
-<div class="hdr"><div><h1>Feuille de route</h1><h2>${today}</h2></div>
-<div class="hdr-r"><div><b>Chauffeur :</b> ${driver.fullName||driver.username}</div>
-<div><b>Matricule :</b> ${driver.username||'—'}</div>
-<div><b>Durée totale :</b> ${totalDay}</div>
-<div style="margin-top:6px;font-size:10px;color:#999;">Généré le ${new Date().toLocaleString('fr-BE')}</div></div></div>
-${missionsHTML}${pausesHTML}
-<div class="sum">
-<div><b>Missions :</b> ${allMissions.length}</div>
-<div><b>Stops total :</b> ${allMissions.reduce((a,m)=>a+(m.stops||[]).length,0)}</div>
-<div><b>Pauses :</b> ${pauses.length>0?pauses.length+' ('+durF(pauses.reduce((a,p)=>a+(p.minPause||0),0))+')':'Aucune'}</div>
-<div><b>Durée journée :</b> ${totalDay}</div></div>
-</body></html>`;
+// Met à jour active_drivers (pause/état entre missions) — tolérant aux colonnes manquantes
+async function updateActiveDriverState(fields) {
+  if (!window.supabaseClient || !currentDriver?.username) return;
+  try {
+    const payload = { lastseen: new Date().toISOString(), ...fields };
+    await window.supabaseClient.from('active_drivers')
+      .update(payload).eq('username', currentDriver.username);
+  } catch(e) { /* colonne manquante : silencieux */ }
 }
 
 function togglePw(inputId, btn) {
@@ -1140,18 +1088,18 @@ function doDepart() {
 
 function endDay() {
   $('end-modal').classList.remove('open');
-  active.dayEndTs = Date.now(); active.completed = true;
-  missions.push(JSON.parse(JSON.stringify(active)));
-  save();
-  saveMissionToSupabase(active).catch(e => console.warn('Save failed:', e));
-
-  // Conserver une référence avant nullification
-  const finishedMission  = active;
-  const finishedUsername = currentDriver?.username || active.driver;
-  // Save data for PDF before nullifying
-  const _pdfMissions = [...missions.filter(m => m.date === todayStr() && m.completed), JSON.parse(JSON.stringify(finishedMission))];
-  const _pdfPauses = [...dayPauses];
-  const _pdfDriver = currentDriver ? {...currentDriver} : null;
+  // Si une mission est en cours, la clôturer ; sinon on ne fait que terminer la journée
+  let finishedMission = null;
+  if (active) {
+    active.dayEndTs = Date.now(); active.completed = true;
+    active.pauses = [...dayPauses];
+    missions.push(JSON.parse(JSON.stringify(active)));
+    save();
+    saveMissionToSupabase(active).catch(e => console.warn('Save failed:', e));
+    finishedMission = active;
+    archiveMissionData(finishedMission);
+  }
+  const finishedUsername = currentDriver?.username || finishedMission?.driver;
 
   active = null; curStop = null; step = 0; dayStart = null;
   clearInterval(ticker);
@@ -1164,42 +1112,46 @@ function endDay() {
   for (let i = 0; i <= 8; i++) show('f' + i, false);
   lockVehicleSelects(true);
   const btnStart = document.getElementById('btn-start-day');
-  if (btnStart) btnStart.textContent = '▶ Démarrer ma journée';
+  if (btnStart) { btnStart.textContent = '▶ Démarrer ma journée'; btnStart.disabled = false; }
   toast('Journée clôturée et enregistrée ✓');
   // Reset pause state
   pauseActive = false; dayPauses = [];
   show('pause-section', false); show('pause-active-panel', false);
-  // Show PDF if allowed
-  if (_pdfDriver?.pdfAllowed) {
-    showPDFDownloadBanner(_pdfMissions, _pdfPauses, _pdfDriver);
-  }
+  show('end-day-section', false);
 
-  archiveMissionData(finishedMission);
-  removeActiveDriver(finishedUsername);
+  if (finishedUsername) removeActiveDriver(finishedUsername);
 }
 
 // Archive completed mission data
 async function archiveMissionData(mission) {
   if (!window.supabaseClient || !mission) return;
   try {
-    await window.supabaseClient.from('missions_archive').upsert([{
+    const payload = {
       id:             mission.id,
       driver:         mission.driver,
       plate:          mission.plateTracteur || mission.plate || '',
       plate_remorque: mission.plateRemorque || mission.plate_remorque || '',
       date:           mission.date,
-      daystartts:    new Date(mission.dayStartTs).toISOString(),
-      dayendts:      mission.dayEndTs ? new Date(mission.dayEndTs).toISOString() : null,
-      completed:     true,
-      stops:         mission.stops || [],
-      archivedat:    new Date().toISOString()
-    }], { onConflict: 'id' });
+      daystartts:     new Date(mission.dayStartTs).toISOString(),
+      dayendts:       mission.dayEndTs ? new Date(mission.dayEndTs).toISOString() : null,
+      completed:      true,
+      stops:          mission.stops || [],
+      archivedat:     new Date().toISOString()
+    };
+    if (Array.isArray(mission.pauses)) payload.pauses = mission.pauses;
+    let { error } = await window.supabaseClient.from('missions_archive').upsert([payload], { onConflict: 'id' });
+    // Retry sans pauses si la colonne n'existe pas encore (migration v1.02 non appliquée)
+    if (error && 'pauses' in payload && /column.+pauses|pauses.+column/i.test(error.message || '')) {
+      delete payload.pauses;
+      await window.supabaseClient.from('missions_archive').upsert([payload], { onConflict: 'id' });
+    }
     console.log('[Archive] Mission archived successfully');
   } catch(e) { console.warn('[Archive] Failed:', e.message); }
 }
 
 function endMissionNewOne() {
-  active.dayEndTs = null; active.completed = true;
+  active.dayEndTs = Date.now(); active.completed = true;
+  active.pauses = [...dayPauses];
   missions.push(JSON.parse(JSON.stringify(active)));
   save();
   saveMissionToSupabase(active).catch(e => console.warn('Save failed:', e));
@@ -1210,10 +1162,15 @@ function endMissionNewOne() {
   $('live-banner').innerHTML = '';
   show('ph-mission', false); show('ph0', true);
   show('pause-section', true);
+  show('end-day-section', true);
   // Déverrouiller les sélecteurs → le chauffeur peut changer de véhicule
   lockVehicleSelects(false);
   const btnStart = document.getElementById('btn-start-day');
   if (btnStart) btnStart.textContent = '▶ Démarrer nouvelle mission';
+  // Notifier le bureau que le chauffeur est entre missions (disponible, pas en pause)
+  if (currentDriver) {
+    updateActiveDriverState({ is_paused: false, pause_start: null, between_missions: true });
+  }
   toast('Mission terminée ✓ — choisissez vos véhicules et démarrez la prochaine');
 }
 
@@ -1479,7 +1436,9 @@ function renderMessages() {
     (m.from==='driver'&&m.fromName===driverName)
   );
   if(!myMsgs.length){container.innerHTML='<div class="empty"><p>Aucun message du bureau.</p></div>';return;}
-  container.innerHTML=[...myMsgs].reverse().map(m=>{
+  // Tri chronologique (ancien → récent) pour afficher les plus récents EN BAS (style messagerie)
+  const sorted = [...myMsgs].sort((a,b) => (a.ts||0) - (b.ts||0));
+  container.innerHTML = sorted.map(m=>{
     const isBureau=m.from==='bureau';
     const cls=isBureau?'msg-bubble msg-bureau'+(m.read?'':' msg-unread'):'msg-bubble msg-driver';
     return `<div class="${cls}">${isBureau?'<div class="msg-meta">Bureau</div>':''}<div class="msg-txt">${m.text}</div><div class="msg-time">${fmtTime(m.ts)}</div></div>`;
@@ -1488,6 +1447,15 @@ function renderMessages() {
   saveMsgs();
   if($('msg-lastcheck'))$('msg-lastcheck').textContent='Lu à '+new Date().toLocaleTimeString('fr-BE',{hour:'2-digit',minute:'2-digit'});
   if(badge)badge.style.display='none';
+  // Scroll automatique vers le dernier message (en bas) — comme les messageries modernes
+  setTimeout(() => {
+    const last = container.lastElementChild;
+    if (last && typeof last.scrollIntoView === 'function') {
+      last.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    }
+  }, 30);
 }
 
 // ============================================================

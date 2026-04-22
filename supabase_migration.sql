@@ -1,85 +1,62 @@
 -- ============================================================
--- LCA Transfert — Migration Supabase
+-- LCA Transfert — Migration Supabase v1.02 (FIX)
+-- Corrige l'erreur "relation missions_archive does not exist"
 -- À exécuter dans l'éditeur SQL de votre projet Supabase
 -- ============================================================
 
--- 1. Table driver_accounts (logins chauffeurs — Supabase uniquement)
-CREATE TABLE IF NOT EXISTS driver_accounts (
-  id         bigserial    PRIMARY KEY,
-  username   text         UNIQUE NOT NULL,
-  fullname   text         NOT NULL DEFAULT '',
-  password   text         NOT NULL DEFAULT '',
-  created_at timestamptz  NOT NULL DEFAULT now()
+-- 0. Créer la table missions_archive si elle n'existe pas encore
+--    (copie la structure de missions pour rester cohérent)
+CREATE TABLE IF NOT EXISTS missions_archive (
+  id              text        PRIMARY KEY,
+  driver          text        NOT NULL DEFAULT '',
+  plate           text        NOT NULL DEFAULT '',
+  plate_remorque  text        NOT NULL DEFAULT '',
+  date            text        NOT NULL DEFAULT '',
+  daystartts      timestamptz,
+  dayendts        timestamptz,
+  completed       boolean     NOT NULL DEFAULT false,
+  stops           jsonb       NOT NULL DEFAULT '[]'::jsonb,
+  pauses          jsonb       NOT NULL DEFAULT '[]'::jsonb,
+  updatedat       timestamptz NOT NULL DEFAULT now(),
+  archived_at     timestamptz NOT NULL DEFAULT now()
 );
 
-ALTER TABLE driver_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE missions_archive ENABLE ROW LEVEL SECURITY;
 DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='driver_accounts' AND policyname='Public read driver_accounts') THEN
-    CREATE POLICY "Public read driver_accounts" ON driver_accounts FOR SELECT USING (true);
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='missions_archive' AND policyname='Public read missions_archive') THEN
+    CREATE POLICY "Public read missions_archive" ON missions_archive FOR SELECT USING (true);
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='driver_accounts' AND policyname='Public insert driver_accounts') THEN
-    CREATE POLICY "Public insert driver_accounts" ON driver_accounts FOR INSERT WITH CHECK (true);
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='missions_archive' AND policyname='Public insert missions_archive') THEN
+    CREATE POLICY "Public insert missions_archive" ON missions_archive FOR INSERT WITH CHECK (true);
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='driver_accounts' AND policyname='Public update driver_accounts') THEN
-    CREATE POLICY "Public update driver_accounts" ON driver_accounts FOR UPDATE USING (true);
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='missions_archive' AND policyname='Public update missions_archive') THEN
+    CREATE POLICY "Public update missions_archive" ON missions_archive FOR UPDATE USING (true);
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='driver_accounts' AND policyname='Public delete driver_accounts') THEN
-    CREATE POLICY "Public delete driver_accounts" ON driver_accounts FOR DELETE USING (true);
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='missions_archive' AND policyname='Public delete missions_archive') THEN
+    CREATE POLICY "Public delete missions_archive" ON missions_archive FOR DELETE USING (true);
   END IF;
 END $$;
 
--- 2. Table vehicles (tracteurs & remorques avec statut active/stand-by)
-CREATE TABLE IF NOT EXISTS vehicles (
-  id         bigserial    PRIMARY KEY,
-  plate      text         UNIQUE NOT NULL,
-  type       text         NOT NULL CHECK (type IN ('tracteur','remorque')),
-  active     boolean      NOT NULL DEFAULT true,
-  created_at timestamptz  NOT NULL DEFAULT now()
-);
+-- ============================================================
+-- 1. Migration v1.02 : suivi pause & état entre-missions en temps réel
+-- ============================================================
 
-ALTER TABLE vehicles ENABLE ROW LEVEL SECURITY;
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='vehicles' AND policyname='Public read vehicles') THEN
-    CREATE POLICY "Public read vehicles" ON vehicles FOR SELECT USING (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='vehicles' AND policyname='Public insert vehicles') THEN
-    CREATE POLICY "Public insert vehicles" ON vehicles FOR INSERT WITH CHECK (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='vehicles' AND policyname='Public update vehicles') THEN
-    CREATE POLICY "Public update vehicles" ON vehicles FOR UPDATE USING (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='vehicles' AND policyname='Public delete vehicles') THEN
-    CREATE POLICY "Public delete vehicles" ON vehicles FOR DELETE USING (true);
-  END IF;
-END $$;
+-- active_drivers : colonnes pause / entre-missions
+ALTER TABLE active_drivers ADD COLUMN IF NOT EXISTS is_paused        boolean     NOT NULL DEFAULT false;
+ALTER TABLE active_drivers ADD COLUMN IF NOT EXISTS pause_start      timestamptz;
+ALTER TABLE active_drivers ADD COLUMN IF NOT EXISTS between_missions boolean     NOT NULL DEFAULT false;
 
--- 3. Table active_drivers (chauffeurs actifs en temps réel)
-CREATE TABLE IF NOT EXISTS active_drivers (
-  id             bigserial    PRIMARY KEY,
-  username       text         UNIQUE NOT NULL,
-  fullname       text         NOT NULL DEFAULT '',
-  plate          text         NOT NULL DEFAULT '',
-  plate_remorque text         NOT NULL DEFAULT '',
-  lastseen       timestamptz  NOT NULL DEFAULT now()
-);
+-- missions : colonne pauses (array JSON) — pauses cumulées de la journée
+ALTER TABLE missions ADD COLUMN IF NOT EXISTS pauses jsonb NOT NULL DEFAULT '[]'::jsonb;
 
-ALTER TABLE active_drivers ENABLE ROW LEVEL SECURITY;
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='active_drivers' AND policyname='Public read active_drivers') THEN
-    CREATE POLICY "Public read active_drivers" ON active_drivers FOR SELECT USING (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='active_drivers' AND policyname='Public insert active_drivers') THEN
-    CREATE POLICY "Public insert active_drivers" ON active_drivers FOR INSERT WITH CHECK (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='active_drivers' AND policyname='Public update active_drivers') THEN
-    CREATE POLICY "Public update active_drivers" ON active_drivers FOR UPDATE USING (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='active_drivers' AND policyname='Public delete active_drivers') THEN
-    CREATE POLICY "Public delete active_drivers" ON active_drivers FOR DELETE USING (true);
-  END IF;
-END $$;
+-- missions_archive : colonnes plate_remorque et pauses
+-- (sans risque maintenant que la table est garantie d'exister)
+ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS plate_remorque text  NOT NULL DEFAULT '';
+ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS pauses         jsonb NOT NULL DEFAULT '[]'::jsonb;
 
--- Activer la Realtime publication pour active_drivers
+-- ============================================================
+-- 2. Activer la Realtime publication pour active_drivers (si pas déjà fait)
+-- ============================================================
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_publication_tables
@@ -89,23 +66,6 @@ DO $$ BEGIN
   END IF;
 END $$;
 
--- 4. Colonne plate_remorque dans missions (si pas encore présente)
-ALTER TABLE missions ADD COLUMN IF NOT EXISTS plate_remorque text NOT NULL DEFAULT '';
-
--- 5. Colonne plate_remorque dans missions_archive (si la table existe)
--- ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS plate_remorque text NOT NULL DEFAULT '';
-
 -- ============================================================
--- Migration: colonne pdf_allowed dans driver_accounts
-ALTER TABLE driver_accounts ADD COLUMN IF NOT EXISTS pdf_allowed boolean NOT NULL DEFAULT false;
-
--- Migration: colonne plate_remorque dans missions_archive
-ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS plate_remorque text NOT NULL DEFAULT '';
-
+-- Fin de la migration v1.02
 -- ============================================================
--- Données de test (décommenter pour insérer)
--- ============================================================
--- INSERT INTO vehicles (plate, type) VALUES ('1-LCA-001', 'tracteur') ON CONFLICT (plate) DO NOTHING;
--- INSERT INTO vehicles (plate, type) VALUES ('1-LCA-002', 'tracteur') ON CONFLICT (plate) DO NOTHING;
--- INSERT INTO vehicles (plate, type) VALUES ('R-001-BEL', 'remorque') ON CONFLICT (plate) DO NOTHING;
--- INSERT INTO vehicles (plate, type) VALUES ('R-002-BEL', 'remorque') ON CONFLICT (plate) DO NOTHING;

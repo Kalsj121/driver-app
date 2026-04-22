@@ -77,7 +77,8 @@ async function loadMissionsFromSupabase() {
       ...m,
       dayStartTs: fromISO(m.daystartts),
       dayEndTs:   fromISO(m.dayendts),
-      stops: (m.stops || []).map(stopFromStorage),
+      stops:  (m.stops  || []).map(stopFromStorage),
+      pauses: Array.isArray(m.pauses) ? m.pauses : [],
     }));
   } catch (e) { console.warn('[Supabase] Mission load failed:', e.message); return []; }
 }
@@ -85,20 +86,29 @@ async function loadMissionsFromSupabase() {
 async function saveMissionToSupabase(mission) {
   if (!supabaseClient) return false;
   try {
-    const { error } = await supabaseClient
+    const payload = {
+      id:             mission.id,
+      driver:         mission.driver,
+      plate:          mission.plateTracteur || mission.plate || '',
+      plate_remorque: mission.plateRemorque || mission.plate_remorque || '',
+      date:           mission.date,
+      daystartts:     toISO(mission.dayStartTs),
+      dayendts:       toISO(mission.dayEndTs),
+      completed:      mission.completed || false,
+      stops:          (mission.stops || []).map(stopToStorage),
+      updatedat:      new Date().toISOString()
+    };
+    // Inclure les pauses si disponibles (colonne ajoutée par la migration v1.02)
+    if (Array.isArray(mission.pauses)) payload.pauses = mission.pauses;
+    let { error } = await supabaseClient
       .from('missions')
-      .upsert([{
-        id:             mission.id,
-        driver:         mission.driver,
-        plate:          mission.plateTracteur || mission.plate || '',
-        plate_remorque: mission.plateRemorque || mission.plate_remorque || '',
-        date:           mission.date,
-        daystartts:     toISO(mission.dayStartTs),
-        dayendts:       toISO(mission.dayEndTs),
-        completed:      mission.completed || false,
-        stops:          (mission.stops || []).map(stopToStorage),
-        updatedat:      new Date().toISOString()
-      }], { onConflict: 'id' });
+      .upsert([payload], { onConflict: 'id' });
+    // Retry sans le champ pauses si la colonne n'existe pas encore
+    if (error && 'pauses' in payload && /column.+pauses|pauses.+column/i.test(error.message || '')) {
+      delete payload.pauses;
+      const retry = await supabaseClient.from('missions').upsert([payload], { onConflict: 'id' });
+      error = retry.error;
+    }
     if (error) { console.error('[Supabase] Error saving mission:', error.message); return false; }
     console.log('[Supabase] ✅ Mission saved');
     return true;
