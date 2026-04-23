@@ -964,9 +964,12 @@ async function persistDayPausesToLastMission() {
   } catch(e) { console.warn('[PauseAttach] lookup missions failed:', e.message); }
   if (!target) { console.warn('[PauseAttach] aucune mission du jour trouvée — pause non attachée pour l\'instant'); return; }
 
-  const payload = { id: target.id, pauses: [...dayPauses], updatedat: new Date().toISOString() };
+  // v1.09g : UPDATE (pas upsert) — la mission existe déjà, on ne veut pas
+  // qu'un insert déclenché par upsert exige tous les champs NOT NULL (driver, date, …).
   try {
-    const { error } = await window.supabaseClient.from('missions').upsert([payload], { onConflict: 'id' });
+    const { error } = await window.supabaseClient.from('missions')
+      .update({ pauses: [...dayPauses], updatedat: new Date().toISOString() })
+      .eq('id', target.id);
     if (error) { console.error('[PauseAttach] erreur update missions:', error.message); return; }
     console.log('[PauseAttach] ✅ pauses attachées à mission', target.id, dayPauses.length, 'pause(s)');
   } catch(e) { console.error('[PauseAttach] exception:', e.message); return; }
