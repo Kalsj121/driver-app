@@ -103,15 +103,12 @@ async function saveMissionToSupabase(mission) {
       stops:          (mission.stops || []).map(stopToStorage),
       updatedat:      new Date().toISOString()
     };
-    // v1.02 : pauses cumulées de la journée
     if (Array.isArray(mission.pauses)) payload.pauses = mission.pauses;
-    // v1.03 : timestamps dispatch + état pause persistés
     if ('tDispatchNotified' in mission) payload.tdispatchnotified = toISO(mission.tDispatchNotified);
     if ('tDispatchReceived' in mission) payload.tdispatchreceived = toISO(mission.tDispatchReceived);
     if ('isPaused'          in mission) payload.ispaused          = mission.isPaused === true;
     if ('tPauseStart'       in mission) payload.tpausestart       = toISO(mission.tPauseStart);
 
-    // Colonnes optionnelles (migrations v1.02 / v1.03) — retry-without-column si absentes
     const OPTIONAL_COLS = ['pauses','tdispatchnotified','tdispatchreceived','ispaused','tpausestart'];
     let { error } = await supabaseClient.from('missions').upsert([payload], { onConflict: 'id' });
     let safety = 6;
@@ -125,7 +122,6 @@ async function saveMissionToSupabase(mission) {
       error = retry.error;
     }
     if (error) { console.error('[Supabase] Error saving mission:', error.message); return false; }
-    console.log('[Supabase] ✅ Mission saved');
     return true;
   } catch (e) { console.error('[Supabase] Mission save exception:', e.message); return false; }
 }
@@ -142,7 +138,6 @@ async function loadMessagesFromSupabase() {
       .select('*')
       .order('ts', { ascending: true });
     if (error) { console.warn('[Supabase] Error loading messages:', error.message); return []; }
-    // Normalise snake_case DB columns (fromname, tolabel) → camelCase JS (fromName, toLabel)
     return (data || []).map(m => ({
       ...m,
       fromName: m.fromName || m.fromname || '',
@@ -258,7 +253,6 @@ async function initSupabase() {
   window._supabaseReady = true;
 }
 
-// Expose globally
 window.saveMissionToSupabase          = saveMissionToSupabase;
 window.saveMessageToSupabase          = saveMessageToSupabase;
 window.updateMessageReadStatus        = updateMessageReadStatus;

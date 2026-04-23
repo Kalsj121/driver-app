@@ -84,11 +84,8 @@ ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS tdispatchreceived timestam
 -- ============================================================
 -- Migration v1.05 : pauses de la journée complète (même en dehors d'une mission)
 -- ============================================================
--- Permet d'enregistrer les pauses prises par le chauffeur entre deux missions
--- (quand aucune mission active n'est attachée) afin qu'elles apparaissent bien
--- dans la feuille de route de fin de journée.
 ALTER TABLE active_drivers ADD COLUMN IF NOT EXISTS day_pauses jsonb NOT NULL DEFAULT '[]'::jsonb;
 
 -- ============================================================
--- Fin des migrations v1.02 → v1.06
+-- Fin des migrations v1.02 → v1.07
 -- ============================================================
