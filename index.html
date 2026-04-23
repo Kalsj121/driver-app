@@ -926,33 +926,13 @@ function endPause() {
 }
 
 // Met à jour active_drivers (pause/état entre missions) — tolérant aux colonnes manquantes
-// v1.08 : logs d'erreurs explicites pour diagnostiquer pourquoi la pause n'apparaît pas au bureau
 async function updateActiveDriverState(fields) {
-  if (!window.supabaseClient || !currentDriver?.username) {
-    console.warn('[ActiveState] Abandon : supabaseClient ou currentDriver manquant', { hasClient: !!window.supabaseClient, user: currentDriver?.username });
-    return;
-  }
+  if (!window.supabaseClient || !currentDriver?.username) return;
   try {
     const payload = { lastseen: new Date().toISOString(), ...fields };
-    let { error } = await window.supabaseClient.from('active_drivers')
+    await window.supabaseClient.from('active_drivers')
       .update(payload).eq('username', currentDriver.username);
-    if (error) {
-      const msg = error.message || '';
-      console.warn('[ActiveState] update error:', msg);
-      const OPT = ['is_paused','pause_start','between_missions'];
-      const drop = OPT.find(c => c in payload && (msg.includes(c) || new RegExp('column.+' + c + '|' + c + '.+column','i').test(msg)));
-      if (drop) {
-        console.warn('[ActiveState] Retry sans colonne', drop, '(pensez à exécuter la migration v1.02)');
-        delete payload[drop];
-        const r = await window.supabaseClient.from('active_drivers').update(payload).eq('username', currentDriver.username);
-        if (r.error) console.error('[ActiveState] Retry échoué :', r.error.message);
-      } else {
-        console.error('[ActiveState] ÉCHEC :', msg);
-      }
-    } else {
-      console.log('[ActiveState] update OK', Object.keys(fields).join(','));
-    }
-  } catch(e) { console.error('[ActiveState] Exception :', e.message); }
+  } catch(e) { /* colonne manquante : silencieux */ }
 }
 
 function togglePw(inputId, btn) {
@@ -1170,8 +1150,11 @@ async function archiveMissionData(mission) {
       updatedat:      nowIso
     };
     if (Array.isArray(mission.pauses)) payload.pauses = mission.pauses;
+    // v1.08 : conserver les timestamps d'état dans l'archive
+    if (mission.tDispatchNotified != null) payload.tdispatchnotified = new Date(mission.tDispatchNotified).toISOString();
+    if (mission.tDispatchReceived != null) payload.tdispatchreceived = new Date(mission.tDispatchReceived).toISOString();
 
-    const OPT = ['pauses','plate_remorque','archivedat','updatedat'];
+    const OPT = ['pauses','plate_remorque','archivedat','updatedat','tdispatchnotified','tdispatchreceived'];
     let { error } = await window.supabaseClient.from('missions_archive').upsert([payload], { onConflict: 'id' });
     let safety = 6;
     while (error && safety-- > 0) {

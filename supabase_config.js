@@ -77,6 +77,11 @@ async function loadMissionsFromSupabase() {
       ...m,
       dayStartTs: fromISO(m.daystartts),
       dayEndTs:   fromISO(m.dayendts),
+      // v1.08 : mapper snake_case -> camelCase pour les timestamps d'état (flux de statuts)
+      tDispatchNotified: fromISO(m.tdispatchnotified),
+      tDispatchReceived: fromISO(m.tdispatchreceived),
+      isPaused:          m.ispaused === true,
+      tPauseStart:       fromISO(m.tpausestart),
       stops:  (m.stops  || []).map(stopFromStorage),
       pauses: Array.isArray(m.pauses) ? m.pauses : [],
     }));
@@ -98,14 +103,23 @@ async function saveMissionToSupabase(mission) {
       stops:          (mission.stops || []).map(stopToStorage),
       updatedat:      new Date().toISOString()
     };
-    // Inclure les pauses si disponibles (colonne ajoutée par la migration v1.02)
+    // v1.08 : sauvegarder explicitement les timestamps d'état (flux de statuts côté dashboard)
+    if (mission.tDispatchNotified != null) payload.tdispatchnotified = toISO(mission.tDispatchNotified);
+    if (mission.tDispatchReceived != null) payload.tdispatchreceived = toISO(mission.tDispatchReceived);
+    if (typeof mission.isPaused === 'boolean') payload.ispaused = mission.isPaused;
+    if (mission.tPauseStart != null) payload.tpausestart = toISO(mission.tPauseStart);
     if (Array.isArray(mission.pauses)) payload.pauses = mission.pauses;
-    let { error } = await supabaseClient
-      .from('missions')
-      .upsert([payload], { onConflict: 'id' });
-    // Retry sans le champ pauses si la colonne n'existe pas encore
-    if (error && 'pauses' in payload && /column.+pauses|pauses.+column/i.test(error.message || '')) {
-      delete payload.pauses;
+
+    // Upsert avec retry tolérant aux colonnes manquantes
+    const OPT = ['pauses','tdispatchnotified','tdispatchreceived','ispaused','tpausestart','plate_remorque'];
+    let { error } = await supabaseClient.from('missions').upsert([payload], { onConflict: 'id' });
+    let safety = 6;
+    while (error && safety-- > 0) {
+      const msg = error.message || '';
+      const drop = OPT.find(c => c in payload && (msg.includes(c) || new RegExp('column.+' + c + '|' + c + '.+column','i').test(msg)));
+      if (!drop) break;
+      console.warn('[Supabase] Retry saveMission sans colonne', drop);
+      delete payload[drop];
       const retry = await supabaseClient.from('missions').upsert([payload], { onConflict: 'id' });
       error = retry.error;
     }
