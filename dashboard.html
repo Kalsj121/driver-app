@@ -1565,9 +1565,26 @@ async function onAppReady() {
   await waitForSupabase();
   loadMessages();
   await fetchDrivers();
+  // v1.09 : rafraîchir toutes les 10s pour que la durée de pause s'incrémente visiblement
+  // et pour rattraper un UPDATE Realtime manqué sur active_drivers.
+  setInterval(() => { renderActiveDriversTable(); }, 10000);
   setInterval(fetchDrivers, 30000);
   setInterval(loadMessages, 15000);
   startRealtimeSync();
+  // v1.09 : diagnostic — vérifie que les colonnes pause existent dans active_drivers
+  if (window.supabaseClient) {
+    try {
+      const { data, error } = await window.supabaseClient
+        .from('active_drivers').select('username,is_paused,pause_start,between_missions').limit(1);
+      if (error) {
+        console.error('[DIAG] active_drivers ne contient pas les colonnes pause !',
+          error.message,
+          '→ Exécute le SQL supabase_migration.sql dans l\'éditeur SQL de Supabase.');
+      } else {
+        console.log('[DIAG] ✅ active_drivers OK (colonnes pause présentes)', data);
+      }
+    } catch(e) { console.error('[DIAG]', e.message); }
+  }
 }
 </script>
 </body>
