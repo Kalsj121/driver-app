@@ -75,9 +75,8 @@ async function loadMissionsFromSupabase() {
     if (error) { console.warn('[Supabase] Error loading missions:', error.message); return []; }
     return (data || []).map(m => ({
       ...m,
-      dayStartTs: fromISO(m.daystartts),
-      dayEndTs:   fromISO(m.dayendts),
-      // v1.08 : mapper snake_case -> camelCase pour les timestamps d'état (flux de statuts)
+      dayStartTs:        fromISO(m.daystartts),
+      dayEndTs:          fromISO(m.dayendts),
       tDispatchNotified: fromISO(m.tdispatchnotified),
       tDispatchReceived: fromISO(m.tdispatchreceived),
       isPaused:          m.ispaused === true,
@@ -103,25 +102,29 @@ async function saveMissionToSupabase(mission) {
       stops:          (mission.stops || []).map(stopToStorage),
       updatedat:      new Date().toISOString()
     };
-    // v1.08 : sauvegarder explicitement les timestamps d'état (flux de statuts côté dashboard)
-    if (mission.tDispatchNotified != null) payload.tdispatchnotified = toISO(mission.tDispatchNotified);
-    if (mission.tDispatchReceived != null) payload.tdispatchreceived = toISO(mission.tDispatchReceived);
-    if (typeof mission.isPaused === 'boolean') payload.ispaused = mission.isPaused;
-    if (mission.tPauseStart != null) payload.tpausestart = toISO(mission.tPauseStart);
-    if (Array.isArray(mission.pauses)) payload.pauses = mission.pauses;
+    // v1.08 — sauvegarder explicitement les timestamps d'état (indispensable pour
+    // que le dashboard voie "En attente de notification / d'instructions / En route").
+    if (Array.isArray(mission.pauses))             payload.pauses            = mission.pauses;
+    if (mission.tDispatchNotified != null)         payload.tdispatchnotified = toISO(mission.tDispatchNotified);
+    if (mission.tDispatchReceived != null)         payload.tdispatchreceived = toISO(mission.tDispatchReceived);
+    if (typeof mission.isPaused === 'boolean')     payload.ispaused          = mission.isPaused;
+    if (mission.tPauseStart != null)               payload.tpausestart       = toISO(mission.tPauseStart);
 
-    // Upsert avec retry tolérant aux colonnes manquantes
+    // Retry robuste : si une colonne optionnelle n'existe pas encore dans la DB,
+    // on l'enlève et on réessaie (jusqu'à épuisement des colonnes optionnelles).
     const OPT = ['pauses','tdispatchnotified','tdispatchreceived','ispaused','tpausestart','plate_remorque'];
-    let { error } = await supabaseClient.from('missions').upsert([payload], { onConflict: 'id' });
-    let safety = 6;
-    while (error && safety-- > 0) {
+    let attempt = 0;
+    let error;
+    while (attempt < OPT.length + 1) {
+      const r = await supabaseClient.from('missions').upsert([payload], { onConflict: 'id' });
+      error = r.error;
+      if (!error) break;
       const msg = error.message || '';
-      const drop = OPT.find(c => c in payload && (msg.includes(c) || new RegExp('column.+' + c + '|' + c + '.+column','i').test(msg)));
-      if (!drop) break;
-      console.warn('[Supabase] Retry saveMission sans colonne', drop);
-      delete payload[drop];
-      const retry = await supabaseClient.from('missions').upsert([payload], { onConflict: 'id' });
-      error = retry.error;
+      const col = OPT.find(c => c in payload && (msg.includes(`"${c}"`) || new RegExp(`column.*${c}|${c}.*column`, 'i').test(msg)));
+      if (!col) break;
+      console.warn('[Supabase] colonne manquante, retry sans:', col);
+      delete payload[col];
+      attempt++;
     }
     if (error) { console.error('[Supabase] Error saving mission:', error.message); return false; }
     console.log('[Supabase] ✅ Mission saved');

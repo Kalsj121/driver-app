@@ -1150,11 +1150,13 @@ async function archiveMissionData(mission) {
       updatedat:      nowIso
     };
     if (Array.isArray(mission.pauses)) payload.pauses = mission.pauses;
-    // v1.08 : conserver les timestamps d'état dans l'archive
+    // v1.08 : propager les timestamps d'état dans l'archive
     if (mission.tDispatchNotified != null) payload.tdispatchnotified = new Date(mission.tDispatchNotified).toISOString();
     if (mission.tDispatchReceived != null) payload.tdispatchreceived = new Date(mission.tDispatchReceived).toISOString();
+    if (typeof mission.isPaused === 'boolean') payload.ispaused = mission.isPaused;
+    if (mission.tPauseStart != null) payload.tpausestart = new Date(mission.tPauseStart).toISOString();
 
-    const OPT = ['pauses','plate_remorque','archivedat','updatedat','tdispatchnotified','tdispatchreceived'];
+    const OPT = ['pauses','plate_remorque','archivedat','updatedat','tdispatchnotified','tdispatchreceived','ispaused','tpausestart'];
     let { error } = await window.supabaseClient.from('missions_archive').upsert([payload], { onConflict: 'id' });
     let safety = 6;
     while (error && safety-- > 0) {

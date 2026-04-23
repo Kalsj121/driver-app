@@ -67,8 +67,7 @@ ALTER TABLE active_drivers ADD COLUMN IF NOT EXISTS between_missions boolean    
 -- missions : colonne pauses (array JSON) — pauses cumulées de la journée
 ALTER TABLE missions ADD COLUMN IF NOT EXISTS pauses jsonb NOT NULL DEFAULT '[]'::jsonb;
 
--- v1.08 : timestamps d'état du flux de statuts (dashboard bureau)
--- SANS ces colonnes, le dashboard reste bloqué sur « En attente de notification de disponibilité »
+-- v1.08 : timestamps d'état (indispensables pour le flux de statuts côté dashboard)
 ALTER TABLE missions ADD COLUMN IF NOT EXISTS tdispatchnotified timestamptz;
 ALTER TABLE missions ADD COLUMN IF NOT EXISTS tdispatchreceived timestamptz;
 ALTER TABLE missions ADD COLUMN IF NOT EXISTS ispaused          boolean     NOT NULL DEFAULT false;
@@ -76,8 +75,10 @@ ALTER TABLE missions ADD COLUMN IF NOT EXISTS tpausestart       timestamptz;
 
 -- missions_archive : colonnes plate_remorque et pauses
 -- (sans risque maintenant que la table est garantie d'exister)
-ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS plate_remorque    text        NOT NULL DEFAULT '';
-ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS pauses            jsonb       NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS plate_remorque text  NOT NULL DEFAULT '';
+ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS pauses         jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+-- v1.08 : mêmes timestamps d'état dans l'archive (pour lecture future / audit)
 ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS tdispatchnotified timestamptz;
 ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS tdispatchreceived timestamptz;
 ALTER TABLE missions_archive ADD COLUMN IF NOT EXISTS ispaused          boolean     NOT NULL DEFAULT false;
