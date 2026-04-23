@@ -460,12 +460,12 @@ function switchView(v) {
 // CONSTANTS
 // ============================================================
 const LCA_SITES = ['LCA Nord','LCA Selys'];
-const STEP_LABELS = ['En attente d\'instruction','Attente quai','Quai attribué','À quai','En opération','Opération terminée','CMR reçu','En transit','En pause'];
+const STEP_LABELS = ['En attente d\'instructions','Attente quai','Quai attribué','À quai','En opération','Opération terminée','CMR reçu','En transit','En pause'];
 
 function getStepLabel(d) {
   if (d.isPaused) return 'En pause';
   if (d.awaitingNotify) return 'En attente de notification de disponibilité';
-  if (d.instructionsReceived && !d.ts_arrival) return 'Instructions reçues — en route';
+  if (d.instructionsReceived && !d.ts_arrival) return 'En route vers sa destination';
   if (d.betweenMissions) return 'Disponible — entre missions';
   const s = parseInt(d.step)||0;
   const op = d.operation || '';
@@ -616,6 +616,8 @@ async function renderActiveDriversTable() {
           const seen = new Date(d.lastseen).toLocaleDateString('fr-BE');
           return seen === todayDate;
         });
+        // v1.08 : cache pour buildDriverDropdown (messagerie chauffeurs en pause/attente)
+        window._activeDriversCache = activeDrivers;
       }
     } catch(e) {}
   }
@@ -650,7 +652,7 @@ async function renderActiveDriversTable() {
       const plateRem    = d.plate_remorque || driver?.plate_remorque || '—';
       const uname       = d.username || d.fullname || '';
       const dateStr     = new Date().toLocaleDateString('fr-BE');
-      // Pause : fond jaune franc sur toute la ligne
+      // Pause : fond jaune franc sur toute la ligne (demande v1.08)
       const rowStyle    = isPaused ? 'background:#FFF4B8;' : '';
       // Durée de pause (live)
       let pauseMins = null;
@@ -659,7 +661,7 @@ async function renderActiveDriversTable() {
       } else if (driver?.isPaused && driver?.ts_pause_start) {
         pauseMins = Math.floor((now - new Date(driver.ts_pause_start).getTime())/60000);
       }
-      // Statut mission : pilule jaune très visible quand en pause
+      // Statut mission : pilule jaune trÃ¨s visible quand en pause
       let statusCell;
       if (isPaused) {
         const durStr = pauseMins!=null
@@ -871,8 +873,11 @@ async function deleteMessage(msgId) {
 }
 
 function buildDriverDropdown() {
+  // v1.08 : inclure aussi les chauffeurs connectés (active_drivers) — en pause ou en attente
+  const liveDrivers = (window._activeDriversCache || []).map(d => d.fullname || d.username).filter(Boolean);
   const driverNames = [...new Set([
     ...drivers.map(d=>d.driver_name),
+    ...liveDrivers,
     ...messages.filter(m=>m.from==='driver').map(m=>m.fromName)
   ].filter(Boolean))].sort();
   ['msg-to','msg-filter'].forEach(id=>{
@@ -974,15 +979,15 @@ async function loadArchiveList() {
   if (!container) return;
   if (!window.supabaseClient) { container.innerHTML='<div class="empty"><p>Supabase non disponible.</p></div>'; return; }
   try {
-    // Essayer d'abord archivedat, puis archived_at (compat schémas anciens)
+    // Essayer d'abord archivedat puis archived_at (compat)
     let data = null, error = null;
     try {
-      const r = await window.supabaseClient.from('missions_archive').select('*').order('archivedat',{ascending:false}).limit(100);
+      const r = await window.supabaseClient.from('missions_archive').select('*').order('archivedat',{ascending:false}).limit(200);
       data = r.data; error = r.error;
     } catch(e) { error = e; }
     if (error || !data) {
       try {
-        const r2 = await window.supabaseClient.from('missions_archive').select('*').order('archived_at',{ascending:false}).limit(100);
+        const r2 = await window.supabaseClient.from('missions_archive').select('*').order('archived_at',{ascending:false}).limit(200);
         data = r2.data; error = r2.error;
       } catch(e) { error = e; }
     }
@@ -991,7 +996,7 @@ async function loadArchiveList() {
       const allM = await window.loadMissionsFromSupabase();
       const completed = allM.filter(m => m.completed);
       if (!completed.length) { container.innerHTML='<div class="empty"><p>Aucune mission archivée.</p></div>'; return; }
-      console.log('[Archive] missions_archive vide → fallback missions.completed (' + completed.length + ')');
+      console.log('[Archive] missions_archive vide -> fallback missions.completed (' + completed.length + ')');
       renderArchiveTable(container, completed);
       return;
     }
@@ -1004,29 +1009,109 @@ async function loadArchiveList() {
 }
 
 function renderArchiveTable(container, missions) {
+  // v1.08 : regrouper par (chauffeur, date) pour éviter les doublons
+  const groups = new Map();
+  (missions||[]).forEach(m => {
+    const drv  = m.driver || '';
+    const date = m.date || '';
+    const key  = drv + '||' + date;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        driver: drv, date,
+        plates: new Set(), platesRem: new Set(),
+        stopsCount: 0, totalMin: 0, missionIds: [],
+        earliestStart: null, latestEnd: null,
+        hasAttachments: false
+      });
+    }
+    const g = groups.get(key);
+    if (m.plate) g.plates.add(m.plate);
+    const pr = m.plate_remorque || m.plateRemorque;
+    if (pr) g.platesRem.add(pr);
+    const stops = (m.stops||[]);
+    g.stopsCount += stops.length;
+    // A-t-il des pièces jointes (CMR dans au moins un stop) ?
+    if (stops.some(s => s && s.cmrData)) g.hasAttachments = true;
+    const startMs = m.dayStartTs || (m.daystartts ? new Date(m.daystartts).getTime() : null);
+    const endMs   = m.dayEndTs   || (m.dayendts   ? new Date(m.dayendts).getTime()   : null);
+    if (startMs && (!g.earliestStart || startMs < g.earliestStart)) g.earliestStart = startMs;
+    if (endMs && (!g.latestEnd || endMs > g.latestEnd)) g.latestEnd = endMs;
+    g.missionIds.push(m.id);
+  });
+  const rows = Array.from(groups.values()).sort((a,b) => {
+    const ta = a.earliestStart||0, tb = b.earliestStart||0;
+    return tb - ta;
+  });
   container.innerHTML = '<table class="reg-table"><thead><tr><th>Date</th><th>Chauffeur</th><th>🚛 Tracteur</th><th>🔗 Remorque</th><th>Stops</th><th>Durée journée</th><th>Actions</th></tr></thead><tbody>'
-    + missions.map(m => {
-      const startMs = m.dayStartTs || (m.daystartts ? new Date(m.daystartts).getTime() : null);
-      const endMs   = m.dayEndTs   || (m.dayendts   ? new Date(m.dayendts).getTime()   : null);
-      const dur = (startMs && endMs) ? Math.round((endMs - startMs) / 60000) + ' min' : '—';
-      const stops = (m.stops||[]).length;
-      const plateRem = m.plate_remorque || m.plateRemorque || '—';
-      const plateTra = m.plate || m.plateTracteur || '—';
-      const drv = (m.driver || '').replace(/'/g,"\\'");
-      const dt  = (m.date || '').replace(/'/g,"\\'");
+    + rows.map(g => {
+      const dur = (g.earliestStart && g.latestEnd) ? Math.round((g.latestEnd - g.earliestStart) / 60000) + ' min' : '—';
+      const plateTra = g.plates.size ? Array.from(g.plates).join(', ') : '—';
+      const plateRem = g.platesRem.size ? Array.from(g.platesRem).join(', ') : '—';
+      const drv = (g.driver || '').replace(/'/g,"\\'");
+      const dt  = (g.date   || '').replace(/'/g,"\\'");
+      const atchBtn = g.hasAttachments
+        ? `<button onclick="downloadDayAttachments('${drv}','${dt}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid rgba(15,110,86,0.3);border-radius:6px;background:var(--glt);color:var(--green);cursor:pointer;margin-right:4px;" title="Télécharger toutes les pièces jointes de la journée">📎 Pièces jointes</button>`
+        : `<button disabled style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid var(--b2);border-radius:6px;background:var(--subcard);color:var(--t3);cursor:not-allowed;margin-right:4px;" title="Aucune pièce jointe">📎 —</button>`;
+      const delBtns = g.missionIds.map(id => `<button class="del-btn" onclick="deleteArchiveMission(${id})" title="Supprimer mission #${id}" style="margin-left:2px;">✕</button>`).join('');
       return `<tr>
-        <td>${m.date||'—'}</td>
-        <td><strong>${m.driver||'—'}</strong></td>
+        <td>${g.date||'—'}</td>
+        <td><strong>${g.driver||'—'}</strong></td>
         <td><code style="font-size:12px;">${plateTra}</code></td>
         <td><code style="font-size:12px;">${plateRem}</code></td>
-        <td>${stops}</td>
+        <td>${g.stopsCount}</td>
         <td>${dur}</td>
         <td style="white-space:nowrap;">
-          <button onclick="openFeuilleDeRoute('${drv}','${dt}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid var(--b2);border-radius:6px;background:none;color:var(--blue);cursor:pointer;margin-right:4px;" title="Générer la feuille de route PDF">📄 Feuille de route</button>
-          <button class="del-btn" onclick="deleteArchiveMission(${m.id})" title="Supprimer">✕</button>
+          <button onclick="openFeuilleDeRoute('${drv}','${dt}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid var(--b2);border-radius:6px;background:none;color:var(--blue);cursor:pointer;margin-right:4px;" title="Télécharger feuille de route du jour">📄 Feuille</button>
+          ${atchBtn}${delBtns}
         </td>
       </tr>`;
     }).join('') + '</tbody></table>';
+}
+
+// ============================================================
+// v1.08 : TÉLÉCHARGER LES PIÈCES JOINTES DE LA JOURNÉE (CMR)
+// ============================================================
+async function downloadDayAttachments(driverName, dateStr) {
+  if (!driverName || !dateStr) { showToast('Paramètres manquants.'); return; }
+  if (!window.supabaseClient) { showToast('Supabase non disponible.'); return; }
+  try {
+    const { data: arch } = await window.supabaseClient.from('missions_archive').select('*').eq('driver',driverName).eq('date',dateStr);
+    const { data: act }  = await window.supabaseClient.from('missions').select('*').eq('driver',driverName).eq('date',dateStr);
+    const byId = new Map();
+    (act||[]).forEach(m => byId.set(m.id, m));
+    (arch||[]).forEach(m => byId.set(m.id, m));
+    const missions = Array.from(byId.values());
+    const items = [];
+    missions.forEach(m => {
+      (m.stops||[]).forEach((s, idx) => {
+        if (s && s.cmrData) {
+          items.push({ missionId: m.id, stopIdx: idx+1, location: s.location||'', cmrData: s.cmrData, operation: s.operation||'' });
+        }
+      });
+    });
+    if (!items.length) { showToast('Aucune pièce jointe pour ' + driverName + ' le ' + dateStr); return; }
+    // Dédoublonner par contenu (évite les doublons entre missions/archive pour le même stop)
+    const seen = new Set(); const uniq = [];
+    items.forEach(it => {
+      const sig = it.cmrData.slice(0, 120) + '|' + it.location;
+      if (!seen.has(sig)) { seen.add(sig); uniq.push(it); }
+    });
+    // Télécharger chaque image en dataURL
+    const safeDrv = driverName.replace(/[^a-zA-Z0-9_-]/g,'_');
+    const safeDt  = dateStr.replace(/[^0-9]/g,'-');
+    uniq.forEach((it, i) => {
+      const data = it.cmrData;
+      const ext = /image\/png/.test(data) ? 'png' : (/image\/jpe?g/.test(data) ? 'jpg' : 'bin');
+      const name = 'CMR_' + safeDrv + '_' + safeDt + '_stop' + it.stopIdx + '_' + (it.location||'').replace(/[^a-zA-Z0-9_-]/g,'_') + '.' + ext;
+      const a = document.createElement('a');
+      a.href = data; a.download = name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    });
+    showToast(uniq.length + ' pièce(s) jointe(s) téléchargée(s) ✓');
+  } catch(e) {
+    console.error('[downloadDayAttachments]', e);
+    showToast('Erreur téléchargement : ' + (e.message||e));
+  }
 }
 
 // ============================================================
@@ -1280,13 +1365,12 @@ async function loadAccounts() {
   if (!container) return;
   let accounts = await getDriverAccounts();
   if (!accounts.length) { container.innerHTML='<div class="empty"><p>Aucun compte chauffeur créé.</p></div>'; return; }
-  container.innerHTML = '<table class="acc-table"><thead><tr><th>Login</th><th>Nom</th><th>PDF feuille</th><th>Action</th></tr></thead><tbody>'
+  // v1.08 : colonne "PDF feuille" retirée (gérée depuis Rapports par le bureau)
+  container.innerHTML = '<table class="acc-table"><thead><tr><th>Login</th><th>Nom</th><th>Action</th></tr></thead><tbody>'
     + accounts.map(a => {
-      const pdfOn = !!a.pdf_allowed;
       return `<tr>
         <td><code>${a.username}</code></td>
         <td>${a.fullname||a.username}</td>
-        <td><button onclick="togglePdfPermission('${a.username}', ${!pdfOn})" style="padding:4px 10px;font-size:11px;font-weight:600;border-radius:6px;cursor:pointer;background:${pdfOn?'var(--glt)':'var(--subcard)'};color:${pdfOn?'var(--green)':'var(--t2)'};border:1px solid ${pdfOn?'rgba(15,110,86,0.3)':'var(--b2)'};">${pdfOn?'✅ Autorisé':'⛔ Bloqué'}</button></td>
         <td><button class="del-btn" onclick="deleteAccount('${a.username}')">✕ Supprimer</button></td>
       </tr>`;
     }).join('') + '</tbody></table>';

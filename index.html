@@ -792,6 +792,8 @@ function startDay() {
   // Enregistrement immédiat dans active_drivers
   registerActiveDriver(name, plateTracteur, plateRemorque).then(() => {
     console.log('[Driver] Registered in active_drivers');
+    // État initial : en attente de notification de disponibilité
+    updateActiveDriverState({ is_paused: false, pause_start: null, between_missions: false });
   });
   syncActive();
   toast('Bonne journée ' + name + ' !');
@@ -876,15 +878,19 @@ function doDispatchNotify() {
   show('f0-notify-area', false);
   show('f0-wait-area', true);
   updateBanner(); syncActive();
-  toast('Bureau notifié ✓ — timer démarré');
+  // État dashboard : en attente d'instructions
+  updateActiveDriverState({ is_paused: false, between_missions: false });
+  toast('Bureau notifié ✓ — en attente d\'instructions');
 }
 
 function doDispatchReceived() {
   active.tDispatchReceived = Date.now();
   active.minDispatch = ms2min(active.tDispatchReceived - active.tDispatchNotified);
   syncActive();
+  // État dashboard : en route vers sa destination
+  updateActiveDriverState({ is_paused: false, between_missions: false });
   setStep(1);
-  toast('Instructions reçues ✓ — départ !');
+  toast('En route ✓ — bonne mission !');
 }
 
 function startPause() {
@@ -920,13 +926,33 @@ function endPause() {
 }
 
 // Met à jour active_drivers (pause/état entre missions) — tolérant aux colonnes manquantes
+// v1.08 : logs d'erreurs explicites pour diagnostiquer pourquoi la pause n'apparaît pas au bureau
 async function updateActiveDriverState(fields) {
-  if (!window.supabaseClient || !currentDriver?.username) return;
+  if (!window.supabaseClient || !currentDriver?.username) {
+    console.warn('[ActiveState] Abandon : supabaseClient ou currentDriver manquant', { hasClient: !!window.supabaseClient, user: currentDriver?.username });
+    return;
+  }
   try {
     const payload = { lastseen: new Date().toISOString(), ...fields };
-    await window.supabaseClient.from('active_drivers')
+    let { error } = await window.supabaseClient.from('active_drivers')
       .update(payload).eq('username', currentDriver.username);
-  } catch(e) { /* colonne manquante : silencieux */ }
+    if (error) {
+      const msg = error.message || '';
+      console.warn('[ActiveState] update error:', msg);
+      const OPT = ['is_paused','pause_start','between_missions'];
+      const drop = OPT.find(c => c in payload && (msg.includes(c) || new RegExp('column.+' + c + '|' + c + '.+column','i').test(msg)));
+      if (drop) {
+        console.warn('[ActiveState] Retry sans colonne', drop, '(pensez à exécuter la migration v1.02)');
+        delete payload[drop];
+        const r = await window.supabaseClient.from('active_drivers').update(payload).eq('username', currentDriver.username);
+        if (r.error) console.error('[ActiveState] Retry échoué :', r.error.message);
+      } else {
+        console.error('[ActiveState] ÉCHEC :', msg);
+      }
+    } else {
+      console.log('[ActiveState] update OK', Object.keys(fields).join(','));
+    }
+  } catch(e) { console.error('[ActiveState] Exception :', e.message); }
 }
 
 function togglePw(inputId, btn) {
@@ -1166,10 +1192,10 @@ async function archiveMissionData(mission) {
       error = r.error;
     }
     if (error) {
-      console.error('[Archive] ÉCHEC définitif :', error.message);
+      console.error('[Archive] ECHEC definitif :', error.message);
       return false;
     }
-    console.log('[Archive] Mission ' + mission.id + ' archivée ✓');
+    console.log('[Archive] Mission ' + mission.id + ' archivee OK');
     return true;
   } catch(e) {
     console.error('[Archive] Exception :', e.message);

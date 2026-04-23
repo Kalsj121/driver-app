@@ -1,7 +1,6 @@
 -- ============================================================
 -- LCA Transfert — Migration Supabase v1.02 (FIX)
 -- Corrige l'erreur "relation missions_archive does not exist"
--- + FIX missions_archive vide : renommage archived_at -> archivedat
 -- À exécuter dans l'éditeur SQL de votre projet Supabase
 -- ============================================================
 
@@ -86,5 +85,5 @@ DO $$ BEGIN
 END $$;
 
 -- ============================================================
--- Fin de la migration v1.02 (avec FIX archivedat)
+-- Fin de la migration v1.02
 -- ============================================================
