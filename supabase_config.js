@@ -328,6 +328,9 @@ window.deleteLocationFromSupabase      = deleteLocationFromSupabase;
 window.toggleLocationActiveStatus      = toggleLocationActiveStatus;
 window.initSupabase                   = initSupabase;
 window.supabaseClient                 = supabaseClient;
+// v1.13 : helpers de conversion timestamp pour la restauration de session
+window.fromISO                        = fromISO;
+window.stopFromStorage                = stopFromStorage;
 
 console.log('[Supabase] Functions registered globally');
 
