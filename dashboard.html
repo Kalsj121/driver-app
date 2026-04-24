@@ -394,7 +394,7 @@ textarea.fi{resize:vertical;min-height:72px;}
 </div><!-- /main-app -->
 
 <!-- VERSION -->
-<div class="version-footer" id="ver-footer" style="display:none;">Version 1.14 (release: 24 avril 2026) — © Kalsj121</div>
+<div class="version-footer" id="ver-footer" style="display:none;">Version 1.15 (release: 24 avril 2026) — © Kalsj121</div>
 
 <!-- Supabase Library -->
 <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -813,19 +813,20 @@ function buildCard(d, threshold) {
     ? `<div class="dc-loc">${step===7?'🚛 ':'📍 '}${d.location}${d.dock?' · Quai '+d.dock:''}</div><div class="dc-sub">${d.operation||''}</div>`
     : '<div class="dc-sub">—</div>';
   const boxes=[];
+  // v1.15 : label dynamique Chargement/Déchargement selon le type d'opération
+  const opLabel = d.operation || 'Opération';
   // v1.14 : Temps à quai — entre "à quai" (tDockReady) et début chargement/déchargement (tOpsStart)
-  // Affiché dès que tDockReady est set ; fige à tOpsStart si opération démarrée, sinon live.
-  if(d.ts_dock_ready){
+  // v1.15 : masqué dès que l'opération a démarré (remplacé par la case Chargement/Déchargement)
+  if(d.ts_dock_ready && !d.ts_ops_start){
     const dockMs = new Date(d.ts_dock_ready).getTime();
-    const endMs  = d.ts_ops_start ? new Date(d.ts_ops_start).getTime() : now;
-    const dq     = Math.floor((endMs - dockMs)/60000);
-    const dqCls  = d.ts_ops_start ? 'tv-gr' : (dq>30?'tv-r':dq>15?'tv-a':'tv-b');
+    const dq     = Math.floor((now - dockMs)/60000);
+    const dqCls  = dq>30?'tv-r':dq>15?'tv-a':'tv-b';
     boxes.push({l:'Temps à quai',v:dur(dq),cls:dqCls,id:'tdq-'+d.user_id});
   }
   if(step===1&&d.ts_arrival){boxes.push({l:'Att.quai',v:dur(w),cls:w>=threshold?'tv-r':w>=threshold*.7?'tv-a':'tv-b',id:'tw-'+d.user_id});}
   if(step===2&&d.ts_dock_assigned){boxes.push({l:'Att.quai',v:dur(d.min_wait),cls:'tv-gr'});boxes.push({l:'Mise quai',v:dur(e(d.ts_dock_assigned)),cls:'tv-b',id:'tdk-'+d.user_id});}
-  if(step===4&&d.ts_ops_start){const op=e(d.ts_ops_start);boxes.push({l:'Opération',v:dur(op),cls:op>60?'tv-r':op>30?'tv-a':'tv-b',id:'top-'+d.user_id});}
-  if(step===5&&d.ts_ops_start){const op=e(d.ts_ops_start);boxes.push({l:'Opération',v:dur(op),cls:'tv-b',id:'top-'+d.user_id});boxes.push({l:'Doc',v:dur(e(d.ts_ops_end)),cls:'tv-g',id:'tdc-'+d.user_id});}
+  if(step===4&&d.ts_ops_start){const op=e(d.ts_ops_start);boxes.push({l:opLabel,v:dur(op),cls:op>60?'tv-r':op>30?'tv-a':'tv-b',id:'top-'+d.user_id});}
+  if(step===5&&d.ts_ops_start){const op=e(d.ts_ops_start);boxes.push({l:opLabel,v:dur(op),cls:'tv-b',id:'top-'+d.user_id});boxes.push({l:'Doc',v:dur(e(d.ts_ops_end)),cls:'tv-g',id:'tdc-'+d.user_id});}
   if(step===7){const srv=d.updated_at?e(d.updated_at):null;boxes.push({l:'Transit',v:dur(srv),cls:'tv-a',id:'ttr-'+d.user_id});}
   if(d.isPaused&&d.ts_pause_start){boxes.push({l:'Pause',v:dur(e(d.ts_pause_start)),cls:'tv-a',id:'tps-'+d.user_id});}
   if(step===0&&d.ts_dispatch_notified&&!d.instructionsReceived){boxes.push({l:'Attente instr.',v:dur(e(d.ts_dispatch_notified)),cls:'tv-b',id:'tdp-'+d.user_id});}
@@ -876,12 +877,11 @@ function liveTick() {
     if(d.isPaused&&d.ts_pause_start)up('tps-'+d.user_id,dur(e(d.ts_pause_start)));
     if(step===0&&d.ts_dispatch_notified&&!d.instructionsReceived)up('tdp-'+d.user_id,dur(e(d.ts_dispatch_notified)));
     if(step===0&&d.instructionsReceived&&d.ts_dispatch_received)up('trr-'+d.user_id,dur(e(d.ts_dispatch_received)));
-    // v1.14 : Temps à quai — live si pas encore tOpsStart, sinon gelé à tOpsStart
-    if(d.ts_dock_ready){
+    // v1.14/v1.15 : Temps à quai — live tant que tOpsStart pas set (sinon la case est retirée)
+    if(d.ts_dock_ready && !d.ts_ops_start){
       const dockMs = new Date(d.ts_dock_ready).getTime();
-      const endMs  = d.ts_ops_start ? new Date(d.ts_ops_start).getTime() : now;
-      const dq     = Math.floor((endMs - dockMs)/60000);
-      up('tdq-'+d.user_id, dur(dq), d.ts_ops_start ? 'tv-gr' : (dq>30?'tv-r':dq>15?'tv-a':'tv-b'));
+      const dq     = Math.floor((now - dockMs)/60000);
+      up('tdq-'+d.user_id, dur(dq), dq>30?'tv-r':dq>15?'tv-a':'tv-b');
     }
     // v1.14 : Durée opération — live depuis tDispatchReceived, gelée à tOpsEnd
     if(d.ts_dispatch_received){
