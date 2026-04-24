@@ -394,7 +394,7 @@ textarea.fi{resize:vertical;min-height:72px;}
 </div><!-- /main-app -->
 
 <!-- VERSION -->
-<div class="version-footer" id="ver-footer" style="display:none;">Version 1.15 (release: 24 avril 2026) — © Kalsj121</div>
+<div class="version-footer" id="ver-footer" style="display:none;">Version 1.16 (release: 24 avril 2026) — © Kalsj121</div>
 
 <!-- Supabase Library -->
 <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -616,6 +616,15 @@ async function fetchDrivers() {
       const todayStr = new Date().toLocaleDateString('fr-BE');
       const activeMissions = allMissions.filter(m => !m.completed && m.date === todayStr);
       drivers = activeMissions.map(missionToDriverStatus).filter(d => d !== null);
+      // v1.16 : cache dayStart par chauffeur (première mission du jour) pour le tableau "Connectés aujourd'hui"
+      const dayStartMap = {};
+      allMissions.filter(m => m.date === todayStr).forEach(m => {
+        const name = m.driver;
+        const ts   = m.dayStartTs ? new Date(m.dayStartTs).getTime() : null;
+        if (!name || !ts) return;
+        if (!dayStartMap[name] || ts < dayStartMap[name]) dayStartMap[name] = ts;
+      });
+      window._driverDayStartMap = dayStartMap;
     }
   } catch(e) { console.warn('[fetchDrivers]', e.message); }
   renderDashboard();
@@ -661,7 +670,10 @@ async function renderActiveDriversTable() {
 
   const now = Date.now();
   const todayISO = new Date().toISOString().slice(0,10);
-  container.innerHTML = '<table class="reg-table"><thead><tr><th>Chauffeur</th><th>Tracteur</th><th>Remorque</th><th>Dernière activité</th><th>Statut mission</th><th></th></tr></thead><tbody>'
+  // v1.16 : helper pour formater une durée en minutes → "X min" ou "Xh YY"
+  const fmtDur = min => min==null?'—':(min<60?min+' min':Math.floor(min/60)+'h'+String(min%60).padStart(2,'0'));
+  const dayStartMap = window._driverDayStartMap || {};
+  container.innerHTML = '<table class="reg-table"><thead><tr><th>Chauffeur</th><th>Tracteur</th><th>Remorque</th><th>Durée journée</th><th>Dernière activité</th><th>Statut mission</th><th></th></tr></thead><tbody>'
     + all.map(d => {
       const driver      = drivers.find(dr => dr.driver_name === d.fullname);
       // Pause = vrai si la mission l'indique OU si active_drivers.is_paused est true (pause entre missions)
@@ -681,6 +693,10 @@ async function renderActiveDriversTable() {
       const plateRem    = d.plate_remorque || driver?.plate_remorque || '—';
       const uname       = d.username || d.fullname || '';
       const dateStr     = new Date().toLocaleDateString('fr-BE');
+      // v1.16 : durée journée — dayStart = première mission du jour du chauffeur
+      const dayStartTs  = dayStartMap[d.fullname] || null;
+      const journeyMin  = dayStartTs ? Math.floor((now - dayStartTs)/60000) : null;
+      const journeyCell = fmtDur(journeyMin);
       // Pause : fond jaune franc sur toute la ligne (demande v1.08)
       const rowStyle    = isPaused ? 'background:#FFF4B8;' : '';
       // Durée de pause (live)
@@ -704,6 +720,7 @@ async function renderActiveDriversTable() {
         <td><span class="${isOnline?'online-dot':''}"></span><strong>${d.fullname||d.username||'—'}</strong></td>
         <td>${d.plate||'—'}</td>
         <td>${plateRem}</td>
+        <td style="font-variant-numeric:tabular-nums;font-weight:600;">${journeyCell}</td>
         <td>${lastSeen}${minsAgo!==null?' (il y a '+minsAgo+' min)':''}</td>
         <td>${statusCell}</td>
         <td style="white-space:nowrap;">
@@ -824,7 +841,11 @@ function buildCard(d, threshold) {
     boxes.push({l:'Temps à quai',v:dur(dq),cls:dqCls,id:'tdq-'+d.user_id});
   }
   if(step===1&&d.ts_arrival){boxes.push({l:'Att.quai',v:dur(w),cls:w>=threshold?'tv-r':w>=threshold*.7?'tv-a':'tv-b',id:'tw-'+d.user_id});}
-  if(step===2&&d.ts_dock_assigned){boxes.push({l:'Att.quai',v:dur(d.min_wait),cls:'tv-gr'});boxes.push({l:'Mise quai',v:dur(e(d.ts_dock_assigned)),cls:'tv-b',id:'tdk-'+d.user_id});}
+  // v1.16 : ne pas afficher "Att.quai" si min_wait indisponible (évite l'affichage d'un "—")
+  if(step===2&&d.ts_dock_assigned){
+    if(d.min_wait!=null) boxes.push({l:'Att.quai',v:dur(d.min_wait),cls:'tv-gr'});
+    boxes.push({l:'Mise quai',v:dur(e(d.ts_dock_assigned)),cls:'tv-b',id:'tdk-'+d.user_id});
+  }
   if(step===4&&d.ts_ops_start){const op=e(d.ts_ops_start);boxes.push({l:opLabel,v:dur(op),cls:op>60?'tv-r':op>30?'tv-a':'tv-b',id:'top-'+d.user_id});}
   if(step===5&&d.ts_ops_start){const op=e(d.ts_ops_start);boxes.push({l:opLabel,v:dur(op),cls:'tv-b',id:'top-'+d.user_id});boxes.push({l:'Doc',v:dur(e(d.ts_ops_end)),cls:'tv-g',id:'tdc-'+d.user_id});}
   if(step===7){const srv=d.updated_at?e(d.updated_at):null;boxes.push({l:'Transit',v:dur(srv),cls:'tv-a',id:'ttr-'+d.user_id});}
@@ -840,7 +861,7 @@ function buildCard(d, threshold) {
     const opCls  = d.ts_ops_end ? 'tv-gr' : (op>120?'tv-r':op>60?'tv-a':'tv-b');
     boxes.push({l:'Durée opération',v:dur(op),cls:opCls,id:'tdo-'+d.user_id});
   }
-  if(d.min_journey)boxes.push({l:'Journée',v:dur(d.min_journey),cls:'tv-gr'});
+  // v1.16 : la "Durée journée" est désormais dans le tableau "Chauffeurs connectés aujourd'hui"
   const timerHtml = boxes.length
     ? '<div class="tgrid">'+boxes.slice(0,6).map(b=>'<div class="tbox"><div class="tb-l">'+b.l+'</div><div class="tb-v '+b.cls+'"'+(b.id?' id="'+b.id+'"':'')+'>'+b.v+'</div></div>').join('')+'</div>'
     : '';
