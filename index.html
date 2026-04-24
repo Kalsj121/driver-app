@@ -313,14 +313,15 @@ select.fi-locked{pointer-events:none;opacity:.7;}
         <div class="ctit" style="color:var(--blue);">Arrivée au lieu</div>
         <div class="fg">
           <label class="fl">Lieu</label>
-          <select class="fi" id="f-loc">
+          <select class="fi" id="f-loc" onchange="onLocationSelectChange()">
             <option value="">— Sélectionner le lieu —</option>
-            <optgroup label="WFS"><option>WFS 32</option><option>WFS 24</option></optgroup>
-            <optgroup label="Challenge"><option>Challenge 76</option><option>Challenge 24</option><option>Challenge Selys</option></optgroup>
-            <optgroup label="Swissport"><option>Swissport</option><option>Swissport Cargo Solution</option></optgroup>
-            <optgroup label="LCA"><option>LCA Nord</option><option>LCA Selys</option></optgroup>
-            <optgroup label="Autres"><option>Avia</option><option>BAS</option><option>Fedex</option><option>FMCS</option><option>PIF/PER Center</option></optgroup>
+            <!-- v1.11 : peuplé dynamiquement depuis Supabase -->
           </select>
+        </div>
+        <!-- v1.11 : saisie manuelle si "Autre" -->
+        <div class="fg" id="f-loc-other-wrap" style="display:none;">
+          <label class="fl">Lieu personnalisé <span style="color:var(--red);font-weight:700;">*</span></label>
+          <input class="fi" type="text" id="f-loc-other" placeholder="Saisir le nom du lieu" style="text-transform:uppercase;"/>
         </div>
         <div class="fg" style="margin-bottom:0;">
           <label class="fl">Type d'opération</label>
@@ -568,6 +569,8 @@ async function doLogin() {
 
   // Charger les listes déroulantes véhicules ET pré-sélectionner
   await loadVehicleDropdowns();
+  // v1.11 : charger la liste des lieux
+  await loadLocationsDropdown();
 
   await initMissions();
   await initMessages();
@@ -586,6 +589,8 @@ async function doLogin() {
       show('ph-mission', false);
       // Charger les listes véhicules et pré-sélectionner
       loadVehicleDropdowns();
+      // v1.11 : charger la liste des lieux
+      loadLocationsDropdown();
     }
   } catch(e) {}
 })();
@@ -1068,7 +1073,14 @@ async function loadVehicleDropdowns() {
 }
 
 function doArrival() {
-  const loc=$('f-loc').value, op=$('f-op').value;
+  let loc = $('f-loc').value;
+  const op = $('f-op').value;
+  // v1.11 : si "Autre", utiliser la saisie manuelle
+  if (loc === '__OTHER__') {
+    const other = ($('f-loc-other')?.value || '').trim();
+    if (!other) { toast('Veuillez saisir le lieu personnalisé.', true); return; }
+    loc = other;
+  }
   if(!loc){toast('Veuillez sélectionner un lieu.',true);return;}
   let transitMs=null;
   if(active.stops.length>0){const prev=active.stops[active.stops.length-1];if(prev.tDepart) transitMs=Date.now()-prev.tDepart;}
@@ -1077,10 +1089,46 @@ function doArrival() {
     transitFromPrev: transitMs!=null ? ms2min(transitMs) : null,
     minTransit:null,minWait:null,minDock:null,minOps:null,minDoc:null,minTotal:null,
     cargoType:'',cargo:[],cmrData:null,comment:''};
+  // Reset UI lieu
   $('f-loc').value='';
+  const otherInput = $('f-loc-other'); if (otherInput) otherInput.value='';
+  const otherWrap  = $('f-loc-other-wrap'); if (otherWrap) otherWrap.style.display='none';
   setStep(2);
   syncActive();
   toast('Arrivée confirmée à '+loc);
+}
+
+// v1.11 : charger la liste des lieux actifs depuis Supabase
+async function loadLocationsDropdown() {
+  const select = document.getElementById('f-loc');
+  if (!select) return;
+  let locations = [];
+  if (window.loadActiveLocationsFromSupabase) {
+    try { locations = await window.loadActiveLocationsFromSupabase(); }
+    catch(e) { console.warn('[loadLocationsDropdown]', e.message); }
+  }
+  const opts = (locations||[])
+    .map(l => `<option value="${String(l.name).replace(/"/g,'&quot;')}">${String(l.name).replace(/</g,'&lt;')}</option>`)
+    .join('');
+  select.innerHTML =
+      '<option value="">— Sélectionner le lieu —</option>'
+    + opts
+    + '<option value="__OTHER__" style="font-style:italic;">✏️ Autre (saisir manuellement)</option>';
+}
+
+// v1.11 : afficher/masquer l'input manuel quand "Autre" est choisi
+function onLocationSelectChange() {
+  const val = document.getElementById('f-loc')?.value || '';
+  const wrap = document.getElementById('f-loc-other-wrap');
+  const input = document.getElementById('f-loc-other');
+  if (!wrap) return;
+  if (val === '__OTHER__') {
+    wrap.style.display = '';
+    if (input) { input.value = ''; setTimeout(() => input.focus(), 50); }
+  } else {
+    wrap.style.display = 'none';
+    if (input) input.value = '';
+  }
 }
 
 function doDockAssigned() {
@@ -1610,7 +1658,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       w += 200;
     }
   };
-  waitSB().then(() => loadVehicleDropdowns());
+  waitSB().then(() => { loadVehicleDropdowns(); loadLocationsDropdown(); });
 
   // If already logged in (session restored), init data
   if (currentDriver) {

@@ -377,6 +377,17 @@ textarea.fi{resize:vertical;min-height:72px;}
 
   </div>
   <p style="font-size:12px;color:var(--t3);margin-top:8px;">💡 Les véhicules en <strong>Stand by</strong> n'apparaissent plus dans les listes des chauffeurs. Utilisez ce statut en cas de panne ou d'indisponibilité temporaire.</p>
+
+  <!-- v1.11 : LIEUX -->
+  <div class="card" style="margin-top:16px;">
+    <div class="ctit">📍 Lieux</div>
+    <div class="fg" style="display:flex;gap:8px;">
+      <input class="fi" type="text" id="new-location" placeholder="Ex: WFS B24" style="text-transform:uppercase;"/>
+      <button class="btn bp bsm" style="flex-shrink:0;" onclick="addLocation()">Ajouter</button>
+    </div>
+    <div id="list-locations"><div class="empty"><p>Chargement…</p></div></div>
+  </div>
+  <p style="font-size:12px;color:var(--t3);margin-top:8px;">💡 Les lieux en <strong>Stand by</strong> n'apparaissent plus dans la liste déroulante "Lieu" du chauffeur. Le chauffeur peut toujours saisir un lieu manuellement via l'option "Autre".</p>
 </div>
 </div>
 
@@ -1860,6 +1871,8 @@ function showToast(msg){
 async function loadVehicles() {
   await loadVehicleList('tracteur');
   await loadVehicleList('remorque');
+  // v1.11 : lieux gérés dans le même onglet
+  await loadLocationList();
 }
 
 async function loadVehicleList(type) {
@@ -1936,6 +1949,82 @@ async function removeVehicle(plate, type) {
   if (ok) {
     showToast('Véhicule supprimé : ' + plate);
     loadVehicleList(type);
+  } else {
+    showToast('Erreur lors de la suppression.');
+  }
+}
+
+// ============================================================
+// v1.11 : GESTION DES LIEUX
+// ============================================================
+async function loadLocationList() {
+  const container = document.getElementById('list-locations');
+  if (!container) return;
+  if (!window.loadLocationsFromSupabase) {
+    container.innerHTML = '<div class="empty"><p>Supabase non disponible.</p></div>';
+    return;
+  }
+  const locations = await window.loadLocationsFromSupabase();
+  if (!locations.length) {
+    container.innerHTML = '<div class="empty"><p>Aucun lieu enregistré.</p></div>';
+    return;
+  }
+  container.innerHTML = locations.map(l => {
+    const isActive = l.active !== false;
+    const badge = isActive
+      ? '<span class="badge-active">Actif</span>'
+      : '<span class="badge-standby">Stand by</span>';
+    const btnLabel = isActive ? '⏸ Stand by' : '▶ Réactiver';
+    const btnStyle = isActive
+      ? 'border:1px solid rgba(186,117,23,0.4);color:var(--amber);'
+      : 'border:1px solid rgba(29,158,117,0.4);color:var(--green);';
+    const safeName = String(l.name||'').replace(/'/g,"\\'");
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid var(--b1);">
+      <div style="display:flex;align-items:center;gap:8px;">
+        ${badge}
+        <span style="font-size:13px;font-weight:600;">${escapeHTML(l.name)}</span>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <button onclick="toggleLocationStatus('${safeName}',${!isActive})" style="padding:4px 8px;font-size:11px;font-weight:600;border-radius:6px;background:none;cursor:pointer;${btnStyle}">${btnLabel}</button>
+        <button onclick="removeLocation('${safeName}')" class="del-btn" title="Supprimer">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function addLocation() {
+  const input = document.getElementById('new-location');
+  const name = input ? input.value.trim().toUpperCase() : '';
+  if (!name) { showToast('Veuillez saisir un nom de lieu.'); return; }
+  if (!window.saveLocationToSupabase) { showToast('Supabase non disponible.'); return; }
+  const ok = await window.saveLocationToSupabase({ name, active: true });
+  if (ok) {
+    if (input) input.value = '';
+    showToast('Lieu ajouté : ' + name + ' ✓');
+    loadLocationList();
+  } else {
+    showToast('Erreur lors de l\'ajout du lieu.');
+  }
+}
+
+async function toggleLocationStatus(name, newActive) {
+  if (!window.toggleLocationActiveStatus) return;
+  const ok = await window.toggleLocationActiveStatus(name, newActive);
+  if (ok) {
+    showToast(name + ' → ' + (newActive ? 'Actif ✓' : 'Stand by ✓'));
+    loadLocationList();
+  } else {
+    showToast('Erreur lors de la mise à jour.');
+  }
+}
+
+async function removeLocation(name) {
+  if (!confirm('Supprimer le lieu « ' + name + ' » définitivement ?\nPréférez Stand by si c\'est temporaire.')) return;
+  if (!window.deleteLocationFromSupabase) { showToast('Supabase non disponible.'); return; }
+  const ok = await window.deleteLocationFromSupabase(name);
+  if (ok) {
+    showToast('Lieu supprimé : ' + name);
+    loadLocationList();
   } else {
     showToast('Erreur lors de la suppression.');
   }

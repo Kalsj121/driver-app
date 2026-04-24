@@ -234,6 +234,54 @@ async function toggleVehicleActiveStatus(plate, active) {
 }
 
 // ============================================================
+// LOCATIONS — Supabase Functions (v1.11)
+// ============================================================
+
+async function loadLocationsFromSupabase() {
+  if (!supabaseClient) return [];
+  try {
+    const { data, error } = await supabaseClient.from('locations').select('*').order('name');
+    if (error) { console.warn('[Supabase] Error loading locations:', error.message); return []; }
+    return data || [];
+  } catch (e) { console.warn('[Supabase] Locations load failed:', e.message); return []; }
+}
+
+async function loadActiveLocationsFromSupabase() {
+  if (!supabaseClient) return [];
+  try {
+    const { data, error } = await supabaseClient.from('locations').select('*').eq('active', true).order('name');
+    if (error) return [];
+    return data || [];
+  } catch (e) { return []; }
+}
+
+async function saveLocationToSupabase(location) {
+  if (!supabaseClient) return false;
+  try {
+    const { error } = await supabaseClient.from('locations').upsert([location], { onConflict: 'name' });
+    if (error) { console.warn('[Supabase] Error saving location:', error.message); return false; }
+    return true;
+  } catch (e) { return false; }
+}
+
+async function deleteLocationFromSupabase(name) {
+  if (!supabaseClient) return false;
+  try {
+    const { error } = await supabaseClient.from('locations').delete().eq('name', name);
+    return !error;
+  } catch (e) { return false; }
+}
+
+async function toggleLocationActiveStatus(name, active) {
+  if (!supabaseClient) return false;
+  try {
+    const { error } = await supabaseClient.from('locations').update({ active }).eq('name', name);
+    if (error) { console.warn('[Supabase] Error toggling location:', error.message); return false; }
+    return true;
+  } catch (e) { return false; }
+}
+
+// ============================================================
 // DRIVER ACCOUNTS — Supabase Functions
 // ============================================================
 
@@ -272,6 +320,12 @@ window.saveVehicleToSupabase          = saveVehicleToSupabase;
 window.deleteVehicleFromSupabase      = deleteVehicleFromSupabase;
 window.toggleVehicleActiveStatus      = toggleVehicleActiveStatus;
 window.loadDriverAccountsFromSupabase = loadDriverAccountsFromSupabase;
+// v1.11 : locations
+window.loadLocationsFromSupabase       = loadLocationsFromSupabase;
+window.loadActiveLocationsFromSupabase = loadActiveLocationsFromSupabase;
+window.saveLocationToSupabase          = saveLocationToSupabase;
+window.deleteLocationFromSupabase      = deleteLocationFromSupabase;
+window.toggleLocationActiveStatus      = toggleLocationActiveStatus;
 window.initSupabase                   = initSupabase;
 window.supabaseClient                 = supabaseClient;
 
