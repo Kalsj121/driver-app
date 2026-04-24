@@ -1233,8 +1233,8 @@ function buildAttachmentsViewerHTML(driverName, dateStr, items) {
     <h1>📎 Pièces jointes CMR<span class="meta">${esc(driverName)} — ${esc(dateStr)} — <span id="count">${items.length}</span> image(s)</span></h1>
   </div>
   <div style="display:flex;gap:8px;">
-    <button class="act-btn primary" onclick="downloadAll()">⬇ Tout télécharger</button>
     <button class="act-btn" onclick="window.close();">✕ Fermer</button>
+    <button class="act-btn primary" onclick="downloadAll()">⬇ Tout télécharger</button>
   </div>
 </div>
 <div id="grid" class="grid"></div>
