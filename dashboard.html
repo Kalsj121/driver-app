@@ -275,7 +275,7 @@ textarea.fi{resize:vertical;min-height:72px;}
     </div>
     <div class="fg" style="margin-bottom:12px;">
       <label class="fl">Message</label>
-      <textarea class="fi" id="msg-text" placeholder="Ex : Attention retard WFS 32 — ne pas partir avant 14h…" style="min-height:80px;"></textarea>
+      <textarea class="fi" id="msg-text" placeholder="Ex : Attention retard WFS 32 — partir avant 14h…" style="min-height:80px;"></textarea>
     </div>
     <button class="btn bp" style="max-width:200px;" onclick="sendMsg()">Envoyer</button>
   </div>
@@ -317,7 +317,7 @@ textarea.fi{resize:vertical;min-height:72px;}
     <div id="archive-search" style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;">
       <div style="position:relative;flex:1;min-width:260px;">
         <input id="archive-search-input" type="search" autocomplete="off"
-          placeholder="🔎 Rechercher AWB, ULD ou PMC (ex: 123-4567 8901, PMC-8712-XF)"
+          placeholder="🔎 Rechercher AWB ou ULD (ex: 123-4567 8901, PMC-8712-FX)"
           style="width:100%;padding:9px 36px 9px 12px;font-size:13px;border:1px solid var(--b2);border-radius:var(--rmd);background:var(--subcard);color:var(--t1);"
           oninput="onArchiveSearchInput()" onkeydown="if(event.key==='Escape'){this.value='';onArchiveSearchInput();}"/>
         <button id="archive-search-clear" onclick="clearArchiveSearch()"
