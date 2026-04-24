@@ -312,6 +312,21 @@ textarea.fi{resize:vertical;min-height:72px;}
   </div>
   <div id="report-summary" class="card">
     <div class="ctit">Missions archivées</div>
+
+    <!-- v1.11 : recherche par AWB / ULD / PMC -->
+    <div id="archive-search" style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;">
+      <div style="position:relative;flex:1;min-width:260px;">
+        <input id="archive-search-input" type="search" autocomplete="off"
+          placeholder="🔎 Rechercher AWB, ULD ou PMC (ex: 123-4567 8901, PMC-8712-XF)"
+          style="width:100%;padding:9px 36px 9px 12px;font-size:13px;border:1px solid var(--b2);border-radius:var(--rmd);background:var(--subcard);color:var(--t1);"
+          oninput="onArchiveSearchInput()" onkeydown="if(event.key==='Escape'){this.value='';onArchiveSearchInput();}"/>
+        <button id="archive-search-clear" onclick="clearArchiveSearch()"
+          title="Effacer la recherche"
+          style="display:none;position:absolute;right:6px;top:50%;transform:translateY(-50%);border:none;background:none;color:var(--t3);font-size:16px;cursor:pointer;padding:4px 8px;">×</button>
+      </div>
+      <div id="archive-search-status" style="font-size:12px;color:var(--t2);min-width:180px;"></div>
+    </div>
+
     <div id="archive-list"><div class="empty"><p>Chargement…</p></div></div>
   </div>
 </div>
@@ -974,6 +989,10 @@ function exportMsgsCSV(){
 // ============================================================
 // ARCHIVE & REPORTS
 // ============================================================
+// v1.11 : cache + recherche par AWB / ULD / PMC
+let _archiveCache = [];         // missions renvoyées par la dernière requête
+let _archiveSearchQuery = '';   // texte recherche courant
+
 async function loadArchiveList() {
   const container = document.getElementById('archive-list');
   if (!container) return;
@@ -995,21 +1014,120 @@ async function loadArchiveList() {
     if (!data || !data.length) {
       const allM = await window.loadMissionsFromSupabase();
       const completed = allM.filter(m => m.completed);
-      if (!completed.length) { container.innerHTML='<div class="empty"><p>Aucune mission archivée.</p></div>'; return; }
+      if (!completed.length) { _archiveCache = []; container.innerHTML='<div class="empty"><p>Aucune mission archivée.</p></div>'; return; }
       console.log('[Archive] missions_archive vide -> fallback missions.completed (' + completed.length + ')');
-      renderArchiveTable(container, completed);
+      _archiveCache = completed;
+      applyArchiveFilterAndRender();
       return;
     }
     console.log('[Archive] ' + data.length + ' missions archivées chargées');
-    renderArchiveTable(container, data);
+    _archiveCache = data;
+    applyArchiveFilterAndRender();
   } catch(e) {
     console.error('[Archive] Exception loadArchiveList:', e);
     container.innerHTML='<div class="empty"><p>Erreur chargement archives : ' + (e.message||e) + '</p></div>';
   }
 }
 
-function renderArchiveTable(container, missions) {
+// ------------------------------------------------------------
+// v1.11 : recherche AWB / ULD / PMC dans les missions archivées
+// ------------------------------------------------------------
+function normalizeCargoToken(s) {
+  // Normalisation permissive : on compare des tokens sans espaces/tirets, en majuscules
+  return String(s||'').toUpperCase().replace(/[\s\-._/]+/g, '');
+}
+
+// Renvoie la liste des correspondances (items cargo qui matchent) pour une mission donnée
+function missionCargoMatches(mission, normQuery) {
+  if (!normQuery) return [];
+  const matches = [];
+  const stops = mission.stops || [];
+  stops.forEach((s, idx) => {
+    if (!s) return;
+    // Scanner chaque item cargo
+    (s.cargo||[]).forEach(c => {
+      const tokens = [
+        c.awb, c.uld,
+        // Token combiné type (ex: "loose") — en général on s'en fiche, mais on matche aussi au cas où
+      ].filter(Boolean);
+      for (const t of tokens) {
+        const norm = normalizeCargoToken(t);
+        if (norm && norm.includes(normQuery)) {
+          matches.push({ stopIdx: idx+1, stopLoc: s.location||'', operation: s.operation||'', cargoLabel: (c.uld || c.awb || '').trim(), cargoType: c.type||'' });
+          break; // un seul match par item cargo
+        }
+      }
+    });
+  });
+  return matches;
+}
+
+// Appelé au rendu : filtre _archiveCache selon _archiveSearchQuery et rend
+function applyArchiveFilterAndRender() {
+  const container = document.getElementById('archive-list');
+  const status = document.getElementById('archive-search-status');
+  const clearBtn = document.getElementById('archive-search-clear');
+  if (!container) return;
+
+  const raw = (_archiveSearchQuery||'').trim();
+  const norm = normalizeCargoToken(raw);
+
+  if (clearBtn) clearBtn.style.display = raw ? '' : 'none';
+
+  if (!raw) {
+    if (status) status.textContent = _archiveCache.length ? (_archiveCache.length + ' mission(s) au total') : '';
+    renderArchiveTable(container, _archiveCache, null);
+    return;
+  }
+
+  // Filtrer les missions contenant au moins un cargo qui matche
+  const matchMap = new Map(); // missionId -> [matches]
+  const matched = (_archiveCache||[]).filter(m => {
+    const ms = missionCargoMatches(m, norm);
+    if (ms.length) { matchMap.set(String(m.id), ms); return true; }
+    return false;
+  });
+
+  if (!matched.length) {
+    if (status) status.innerHTML = '<span style="color:var(--red);font-weight:600;">Aucun résultat pour « ' + escapeHTML(raw) + ' »</span>';
+    container.innerHTML = '<div class="empty"><p>Aucune mission archivée ne contient « ' + escapeHTML(raw) + ' ».</p></div>';
+    return;
+  }
+
+  // Nombre de journées (groupes chauffeur+date) uniques
+  const uniqDays = new Set(matched.map(m => (m.driver||'') + '||' + (m.date||'')));
+  if (status) {
+    const totalMatches = Array.from(matchMap.values()).reduce((a,b) => a + b.length, 0);
+    status.innerHTML = '<strong style="color:var(--green);">' + uniqDays.size + ' journée(s)</strong> · '
+      + totalMatches + ' occurrence(s) trouvée(s) pour « ' + escapeHTML(raw) + ' »';
+  }
+  renderArchiveTable(container, matched, matchMap);
+}
+
+function onArchiveSearchInput() {
+  const input = document.getElementById('archive-search-input');
+  _archiveSearchQuery = input ? input.value : '';
+  // Debounce léger (150ms) pour éviter les re-renders à chaque frappe
+  clearTimeout(onArchiveSearchInput._t);
+  onArchiveSearchInput._t = setTimeout(applyArchiveFilterAndRender, 150);
+}
+
+function clearArchiveSearch() {
+  const input = document.getElementById('archive-search-input');
+  if (input) input.value = '';
+  _archiveSearchQuery = '';
+  applyArchiveFilterAndRender();
+  if (input) input.focus();
+}
+
+function escapeHTML(s) {
+  return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderArchiveTable(container, missions, matchMap) {
   // v1.08 : regrouper par (chauffeur, date) pour éviter les doublons
+  // v1.11 : matchMap optionnel — Map<missionId, [{stopIdx, stopLoc, operation, cargoLabel, cargoType}]>
+  const hasSearch = !!matchMap;
   const groups = new Map();
   (missions||[]).forEach(m => {
     const drv  = m.driver || '';
@@ -1021,7 +1139,8 @@ function renderArchiveTable(container, missions) {
         plates: new Set(), platesRem: new Set(),
         stopsCount: 0, totalMin: 0, missionIds: [],
         earliestStart: null, latestEnd: null,
-        hasAttachments: false
+        hasAttachments: false,
+        matches: [] // v1.11
       });
     }
     const g = groups.get(key);
@@ -1037,6 +1156,11 @@ function renderArchiveTable(container, missions) {
     if (startMs && (!g.earliestStart || startMs < g.earliestStart)) g.earliestStart = startMs;
     if (endMs && (!g.latestEnd || endMs > g.latestEnd)) g.latestEnd = endMs;
     g.missionIds.push(m.id);
+    // v1.11 : accumulate cargo matches for this day
+    if (hasSearch) {
+      const ms = matchMap.get(String(m.id)) || [];
+      ms.forEach(x => g.matches.push(x));
+    }
   });
   const rows = Array.from(groups.values()).sort((a,b) => {
     const ta = a.earliestStart||0, tb = b.earliestStart||0;
@@ -1053,6 +1177,27 @@ function renderArchiveTable(container, missions) {
         ? `<button onclick="openDayAttachmentsViewer('${drv}','${dt}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid rgba(15,110,86,0.3);border-radius:6px;background:var(--glt);color:var(--green);cursor:pointer;margin-right:4px;" title="Consulter les pièces jointes de la journée">📎 Pièces jointes</button>`
         : `<button disabled style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid var(--b2);border-radius:6px;background:var(--subcard);color:var(--t3);cursor:not-allowed;margin-right:4px;" title="Aucune pièce jointe">📎 —</button>`;
       const delBtns = g.missionIds.map(id => `<button class="del-btn" onclick="deleteArchiveMission(${id})" title="Supprimer mission #${id}" style="margin-left:2px;">✕</button>`).join('');
+
+      // v1.11 : sous-ligne "Correspondance" quand la recherche est active
+      let matchRow = '';
+      if (hasSearch && g.matches && g.matches.length) {
+        // dédoublonner (même cargoLabel + stopIdx)
+        const seen = new Set();
+        const uniq = [];
+        g.matches.forEach(x => {
+          const sig = (x.cargoLabel||'') + '|' + x.stopIdx + '|' + (x.operation||'');
+          if (!seen.has(sig)) { seen.add(sig); uniq.push(x); }
+        });
+        const chips = uniq.map(x => {
+          const icon = x.cargoType === 'uld' ? '🛄' : '📦';
+          const opShort = (x.operation||'').toLowerCase().startsWith('charg') ? '⬆' : ((x.operation||'').toLowerCase().startsWith('déch') || (x.operation||'').toLowerCase().startsWith('dech') ? '⬇' : '•');
+          return `<span style="display:inline-block;background:var(--glt);border:1px solid rgba(15,110,86,0.25);color:var(--green);padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;margin:2px 4px 2px 0;">${icon} ${escapeHTML(x.cargoLabel||'—')} <span style="color:var(--t2);font-weight:500;">· stop ${x.stopIdx} ${opShort} ${escapeHTML(x.stopLoc||'')}</span></span>`;
+        }).join('');
+        matchRow = `<tr class="match-row"><td colspan="7" style="background:rgba(15,110,86,0.04);padding:6px 12px;border-top:none;">
+          <span style="font-size:11px;color:var(--t2);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-right:6px;">🎯 Correspondance :</span>${chips}
+        </td></tr>`;
+      }
+
       return `<tr>
         <td>${g.date||'—'}</td>
         <td><strong>${g.driver||'—'}</strong></td>
@@ -1064,7 +1209,7 @@ function renderArchiveTable(container, missions) {
           <button onclick="openFeuilleDeRoute('${drv}','${dt}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid var(--b2);border-radius:6px;background:none;color:var(--blue);cursor:pointer;margin-right:4px;" title="Télécharger feuille de route du jour">📄 Feuille</button>
           ${atchBtn}${delBtns}
         </td>
-      </tr>`;
+      </tr>${matchRow}`;
     }).join('') + '</tbody></table>';
 }
 
@@ -1171,8 +1316,19 @@ async function deleteAttachmentCMR(missionId, stopIdx0) {
       }
     } catch(e) { console.warn('[deleteAttachmentCMR] archive lookup:', e.message); }
     if (!patched) return { ok:false, error:'Aucune ligne mise à jour' };
-    // Rafraîchir le tableau Rapports pour mettre à jour le flag "hasAttachments"
-    try { if (typeof renderReports === 'function') renderReports(); } catch(e){}
+    // v1.11 : rafraîchir le tableau Rapports + mettre à jour le cache local
+    try {
+      if (Array.isArray(_archiveCache)) {
+        _archiveCache = _archiveCache.map(m => {
+          if (String(m.id) !== String(missionId)) return m;
+          const stops = Array.isArray(m.stops) ? [...m.stops] : [];
+          if (stops[stopIdx0]) stops[stopIdx0] = { ...stops[stopIdx0], cmrData: null };
+          return { ...m, stops };
+        });
+      }
+      if (typeof applyArchiveFilterAndRender === 'function') applyArchiveFilterAndRender();
+      else if (typeof loadArchiveList === 'function') loadArchiveList();
+    } catch(e) { console.warn('[deleteAttachmentCMR] refresh ui:', e.message); }
     return { ok:true };
   } catch(e) {
     console.error('[deleteAttachmentCMR]', e);
