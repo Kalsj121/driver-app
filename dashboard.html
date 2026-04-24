@@ -1050,7 +1050,7 @@ function renderArchiveTable(container, missions) {
       const drv = (g.driver || '').replace(/'/g,"\\'");
       const dt  = (g.date   || '').replace(/'/g,"\\'");
       const atchBtn = g.hasAttachments
-        ? `<button onclick="downloadDayAttachments('${drv}','${dt}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid rgba(15,110,86,0.3);border-radius:6px;background:var(--glt);color:var(--green);cursor:pointer;margin-right:4px;" title="Télécharger toutes les pièces jointes de la journée">📎 Pièces jointes</button>`
+        ? `<button onclick="openDayAttachmentsViewer('${drv}','${dt}')" style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid rgba(15,110,86,0.3);border-radius:6px;background:var(--glt);color:var(--green);cursor:pointer;margin-right:4px;" title="Consulter les pièces jointes de la journée">📎 Pièces jointes</button>`
         : `<button disabled style="padding:4px 8px;font-size:11px;font-weight:600;border:1px solid var(--b2);border-radius:6px;background:var(--subcard);color:var(--t3);cursor:not-allowed;margin-right:4px;" title="Aucune pièce jointe">📎 —</button>`;
       const delBtns = g.missionIds.map(id => `<button class="del-btn" onclick="deleteArchiveMission(${id})" title="Supprimer mission #${id}" style="margin-left:2px;">✕</button>`).join('');
       return `<tr>
@@ -1069,49 +1069,251 @@ function renderArchiveTable(container, missions) {
 }
 
 // ============================================================
-// v1.08 : TÉLÉCHARGER LES PIÈCES JOINTES DE LA JOURNÉE (CMR)
+// v1.10 : VISIONNEUSE DE PIÈCES JOINTES (CMR) — consulter / supprimer / télécharger
 // ============================================================
-async function downloadDayAttachments(driverName, dateStr) {
+
+// Map locale des fenêtres viewer ouvertes (pour les callbacks delete/download)
+window._attachmentViewers = window._attachmentViewers || {};
+
+async function openDayAttachmentsViewer(driverName, dateStr) {
   if (!driverName || !dateStr) { showToast('Paramètres manquants.'); return; }
   if (!window.supabaseClient) { showToast('Supabase non disponible.'); return; }
   try {
-    const { data: arch } = await window.supabaseClient.from('missions_archive').select('*').eq('driver',driverName).eq('date',dateStr);
-    const { data: act }  = await window.supabaseClient.from('missions').select('*').eq('driver',driverName).eq('date',dateStr);
-    const byId = new Map();
-    (act||[]).forEach(m => byId.set(m.id, m));
-    (arch||[]).forEach(m => byId.set(m.id, m));
-    const missions = Array.from(byId.values());
-    const items = [];
-    missions.forEach(m => {
-      (m.stops||[]).forEach((s, idx) => {
-        if (s && s.cmrData) {
-          items.push({ missionId: m.id, stopIdx: idx+1, location: s.location||'', cmrData: s.cmrData, operation: s.operation||'' });
-        }
-      });
-    });
+    const items = await loadDayAttachments(driverName, dateStr);
     if (!items.length) { showToast('Aucune pièce jointe pour ' + driverName + ' le ' + dateStr); return; }
-    // Dédoublonner par contenu (évite les doublons entre missions/archive pour le même stop)
-    const seen = new Set(); const uniq = [];
-    items.forEach(it => {
-      const sig = it.cmrData.slice(0, 120) + '|' + it.location;
-      if (!seen.has(sig)) { seen.add(sig); uniq.push(it); }
-    });
-    // Télécharger chaque image en dataURL
-    const safeDrv = driverName.replace(/[^a-zA-Z0-9_-]/g,'_');
-    const safeDt  = dateStr.replace(/[^0-9]/g,'-');
-    uniq.forEach((it, i) => {
-      const data = it.cmrData;
-      const ext = /image\/png/.test(data) ? 'png' : (/image\/jpe?g/.test(data) ? 'jpg' : 'bin');
-      const name = 'CMR_' + safeDrv + '_' + safeDt + '_stop' + it.stopIdx + '_' + (it.location||'').replace(/[^a-zA-Z0-9_-]/g,'_') + '.' + ext;
-      const a = document.createElement('a');
-      a.href = data; a.download = name;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    });
-    showToast(uniq.length + ' pièce(s) jointe(s) téléchargée(s) ✓');
+
+    const viewerKey = driverName + '|' + dateStr;
+    // Si une fenêtre est déjà ouverte pour cette journée, la refocaliser
+    const existing = window._attachmentViewers[viewerKey];
+    if (existing && !existing.closed) { existing.focus(); return; }
+
+    const w = window.open('', '_blank', 'width=1100,height=800,scrollbars=yes,resizable=yes');
+    if (!w) { showToast('Popup bloquée par le navigateur.'); return; }
+    window._attachmentViewers[viewerKey] = w;
+    const html = buildAttachmentsViewerHTML(driverName, dateStr, items);
+    w.document.write(html);
+    w.document.close();
+    w.focus();
   } catch(e) {
-    console.error('[downloadDayAttachments]', e);
-    showToast('Erreur téléchargement : ' + (e.message||e));
+    console.error('[openDayAttachmentsViewer]', e);
+    showToast('Erreur : ' + (e.message||e));
   }
+}
+
+// Récupère les pièces jointes (dédoublonnées) d'une journée — utilisé à l'ouverture et au refresh
+async function loadDayAttachments(driverName, dateStr) {
+  const { data: arch } = await window.supabaseClient.from('missions_archive').select('*').eq('driver',driverName).eq('date',dateStr);
+  const { data: act }  = await window.supabaseClient.from('missions').select('*').eq('driver',driverName).eq('date',dateStr);
+  const byId = new Map();
+  (act||[]).forEach(m => byId.set(String(m.id), m));
+  (arch||[]).forEach(m => byId.set(String(m.id), m));
+  const missions = Array.from(byId.values());
+  const items = [];
+  missions.forEach(m => {
+    (m.stops||[]).forEach((s, idx) => {
+      if (s && s.cmrData) {
+        items.push({
+          missionId: m.id,
+          stopIdx: idx+1,
+          stopIdx0: idx,
+          location: s.location||'',
+          operation: s.operation||'',
+          cmrData: s.cmrData
+        });
+      }
+    });
+  });
+  // Dédoublonner par contenu (même stop présent dans missions + missions_archive)
+  const seen = new Set(); const uniq = [];
+  items.forEach(it => {
+    const sig = it.cmrData.slice(0, 120) + '|' + it.location;
+    if (!seen.has(sig)) { seen.add(sig); uniq.push(it); }
+  });
+  return uniq;
+}
+
+// Supprime une pièce jointe (cmrData = null sur le stop concerné dans les deux tables)
+// Appelée depuis la fenêtre viewer via window.opener.deleteAttachmentCMR(...)
+async function deleteAttachmentCMR(missionId, stopIdx0) {
+  if (!window.supabaseClient) return { ok:false, error:'Supabase non disponible' };
+  try {
+    // 1. Tenter dans missions (id numérique)
+    let patched = false;
+    try {
+      const { data: mrow } = await window.supabaseClient.from('missions').select('*').eq('id', missionId).limit(1);
+      if (mrow && mrow[0]) {
+        const stops = Array.isArray(mrow[0].stops) ? [...mrow[0].stops] : [];
+        if (stops[stopIdx0]) {
+          stops[stopIdx0] = { ...stops[stopIdx0], cmrData: null };
+          const { error } = await window.supabaseClient.from('missions').update({
+            stops,
+            updatedat: new Date().toISOString()
+          }).eq('id', missionId);
+          if (!error) patched = true;
+          else console.warn('[deleteAttachmentCMR] missions update error:', error.message);
+        }
+      }
+    } catch(e) { console.warn('[deleteAttachmentCMR] missions lookup:', e.message); }
+    // 2. Tenter aussi dans missions_archive (id text)
+    try {
+      const { data: arow } = await window.supabaseClient.from('missions_archive').select('*').eq('id', String(missionId)).limit(1);
+      if (arow && arow[0]) {
+        const stops = Array.isArray(arow[0].stops) ? [...arow[0].stops] : [];
+        if (stops[stopIdx0]) {
+          stops[stopIdx0] = { ...stops[stopIdx0], cmrData: null };
+          const { error } = await window.supabaseClient.from('missions_archive').update({
+            stops,
+            updatedat: new Date().toISOString()
+          }).eq('id', String(missionId));
+          if (!error) patched = true;
+          else console.warn('[deleteAttachmentCMR] archive update error:', error.message);
+        }
+      }
+    } catch(e) { console.warn('[deleteAttachmentCMR] archive lookup:', e.message); }
+    if (!patched) return { ok:false, error:'Aucune ligne mise à jour' };
+    // Rafraîchir le tableau Rapports pour mettre à jour le flag "hasAttachments"
+    try { if (typeof renderReports === 'function') renderReports(); } catch(e){}
+    return { ok:true };
+  } catch(e) {
+    console.error('[deleteAttachmentCMR]', e);
+    return { ok:false, error: e.message||String(e) };
+  }
+}
+window.deleteAttachmentCMR = deleteAttachmentCMR;
+
+// Construit le HTML autonome de la visionneuse
+function buildAttachmentsViewerHTML(driverName, dateStr, items) {
+  const safeDrv = driverName.replace(/[^a-zA-Z0-9_-]/g,'_');
+  const safeDt  = dateStr.replace(/[^0-9]/g,'-');
+  const title = 'CMR — ' + driverName + ' — ' + dateStr;
+  const esc = s => String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const itemsJson = JSON.stringify(items).replace(/</g,'\\u003c');
+  return `<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>${esc(title)}</title>
+<style>
+  *{box-sizing:border-box;}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;margin:0;background:#f4f6f8;color:#222;}
+  .actions-bar{position:sticky;top:0;background:#fff;border-bottom:1px solid #e0e0e0;padding:12px 20px;z-index:10;display:flex;gap:10px;justify-content:space-between;align-items:center;box-shadow:0 2px 4px rgba(0,0,0,.04);}
+  .actions-bar h1{margin:0;font-size:15px;font-weight:600;color:#1a5c6e;}
+  .actions-bar .meta{font-size:12px;color:#666;font-weight:400;margin-left:8px;}
+  .act-btn{padding:8px 14px;border:1px solid #4da9be;background:#fff;color:#1a5c6e;font-size:13px;font-weight:600;border-radius:6px;cursor:pointer;transition:all .15s;}
+  .act-btn:hover{background:#4da9be;color:#fff;}
+  .act-btn.primary{background:#4da9be;color:#fff;}
+  .act-btn.primary:hover{background:#1a5c6e;border-color:#1a5c6e;}
+  .act-btn.danger{border-color:#d94545;color:#a02020;}
+  .act-btn.danger:hover{background:#d94545;color:#fff;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;padding:20px;}
+  .card{background:#fff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.08);overflow:hidden;display:flex;flex-direction:column;}
+  .card .thumb{background:#eceef2;display:flex;align-items:center;justify-content:center;min-height:180px;max-height:260px;overflow:hidden;cursor:zoom-in;}
+  .card .thumb img{max-width:100%;max-height:260px;display:block;object-fit:contain;}
+  .card .body{padding:10px 12px;border-top:1px solid #eee;}
+  .card .loc{font-size:13px;font-weight:600;color:#1a5c6e;margin-bottom:2px;}
+  .card .op{font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.4px;}
+  .card .row{display:flex;gap:6px;padding:8px 12px 12px;}
+  .card .row button{flex:1;padding:6px 8px;font-size:12px;border-radius:5px;font-weight:600;cursor:pointer;border:1px solid;background:#fff;}
+  .card .row .dl{border-color:#4da9be;color:#1a5c6e;}
+  .card .row .dl:hover{background:#4da9be;color:#fff;}
+  .card .row .del{border-color:#d94545;color:#a02020;}
+  .card .row .del:hover{background:#d94545;color:#fff;}
+  .empty{text-align:center;padding:60px 20px;color:#888;font-size:14px;}
+  /* Lightbox */
+  .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.9);display:none;align-items:center;justify-content:center;z-index:1000;cursor:zoom-out;}
+  .lightbox.on{display:flex;}
+  .lightbox img{max-width:95vw;max-height:95vh;}
+  .lightbox .close{position:absolute;top:14px;right:18px;color:#fff;font-size:28px;cursor:pointer;background:none;border:none;}
+  @media print{.actions-bar,.card .row{display:none;}body{background:#fff;}.grid{grid-template-columns:1fr 1fr;}.card{box-shadow:none;border:1px solid #ccc;page-break-inside:avoid;}}
+</style>
+</head>
+<body>
+<div class="actions-bar">
+  <div>
+    <h1>📎 Pièces jointes CMR<span class="meta">${esc(driverName)} — ${esc(dateStr)} — <span id="count">${items.length}</span> image(s)</span></h1>
+  </div>
+  <div style="display:flex;gap:8px;">
+    <button class="act-btn primary" onclick="downloadAll()">⬇ Tout télécharger</button>
+    <button class="act-btn" onclick="window.close();">✕ Fermer</button>
+  </div>
+</div>
+<div id="grid" class="grid"></div>
+<div id="lightbox" class="lightbox" onclick="closeLightbox()">
+  <button class="close" onclick="closeLightbox()">×</button>
+  <img id="lightbox-img" alt="">
+</div>
+<script>
+  const DRIVER = ${JSON.stringify(driverName)};
+  const DATE   = ${JSON.stringify(dateStr)};
+  const SAFE_DRV = ${JSON.stringify(safeDrv)};
+  const SAFE_DT  = ${JSON.stringify(safeDt)};
+  let ITEMS = ${itemsJson};
+
+  function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function extOf(d){ return /image\\/png/.test(d)?'png':(/image\\/jpe?g/.test(d)?'jpg':'bin'); }
+  function fileName(it){
+    const loc = (it.location||'').replace(/[^a-zA-Z0-9_-]/g,'_');
+    return 'CMR_' + SAFE_DRV + '_' + SAFE_DT + '_stop' + it.stopIdx + (loc?'_'+loc:'') + '.' + extOf(it.cmrData);
+  }
+  function render(){
+    const g = document.getElementById('grid');
+    document.getElementById('count').textContent = ITEMS.length;
+    if (!ITEMS.length) { g.innerHTML = '<div class="empty">Aucune pièce jointe restante. Vous pouvez fermer cette fenêtre.</div>'; return; }
+    g.innerHTML = ITEMS.map((it, i) => \`
+      <div class="card" data-i="\${i}">
+        <div class="thumb" onclick="openLightbox(\${i})"><img src="\${it.cmrData}" alt="CMR stop \${it.stopIdx}"></div>
+        <div class="body">
+          <div class="loc">Stop \${it.stopIdx}\${it.location ? ' — ' + esc(it.location) : ''}</div>
+          <div class="op">\${esc(it.operation || '')}</div>
+        </div>
+        <div class="row">
+          <button class="dl" onclick="downloadOne(\${i})">⬇ Télécharger</button>
+          <button class="del" onclick="deleteOne(\${i})">🗑 Supprimer</button>
+        </div>
+      </div>
+    \`).join('');
+  }
+  function downloadOne(i){
+    const it = ITEMS[i]; if (!it) return;
+    const a = document.createElement('a');
+    a.href = it.cmrData; a.download = fileName(it);
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }
+  function downloadAll(){
+    ITEMS.forEach((_,i) => downloadOne(i));
+  }
+  async function deleteOne(i){
+    const it = ITEMS[i]; if (!it) return;
+    if (!confirm('Supprimer définitivement cette pièce jointe ?\\n\\nStop ' + it.stopIdx + (it.location ? ' — ' + it.location : ''))) return;
+    if (!window.opener || window.opener.closed || typeof window.opener.deleteAttachmentCMR !== 'function') {
+      alert('La fenêtre principale du dashboard est fermée. Rouvrez la visionneuse depuis le dashboard.');
+      return;
+    }
+    const btn = document.querySelector('[data-i="'+i+'"] .del');
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    const res = await window.opener.deleteAttachmentCMR(it.missionId, it.stopIdx0);
+    if (res && res.ok) {
+      ITEMS.splice(i,1);
+      render();
+    } else {
+      alert('Échec de la suppression : ' + (res && res.error ? res.error : 'erreur inconnue'));
+      if (btn) { btn.disabled = false; btn.textContent = '🗑 Supprimer'; }
+    }
+  }
+  function openLightbox(i){
+    const it = ITEMS[i]; if (!it) return;
+    document.getElementById('lightbox-img').src = it.cmrData;
+    document.getElementById('lightbox').classList.add('on');
+  }
+  function closeLightbox(){
+    document.getElementById('lightbox').classList.remove('on');
+    document.getElementById('lightbox-img').src = '';
+  }
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+  render();
+<\/script>
+</body>
+</html>`;
 }
 
 // ============================================================
