@@ -222,6 +222,7 @@ textarea.fi{resize:vertical;min-height:72px;}
   <button class="tab" onclick="switchView('reports')" id="tab-reports">📊 Rapports</button>
   <button class="tab" onclick="switchView('accounts')" id="tab-accounts">👤 Comptes</button>
   <button class="tab" onclick="switchView('vehicles')" id="tab-vehicles">🚛 Véhicules</button>
+  <button class="tab" onclick="switchView('backups')" id="tab-backups">💾 Sauvegardes</button>
 </div>
 
 <!-- ============================================================ DASHBOARD -->
@@ -391,13 +392,68 @@ textarea.fi{resize:vertical;min-height:72px;}
 </div>
 </div>
 
+<!-- ============================================================ SAUVEGARDES (v1.21) -->
+<div class="view" id="view-backups">
+<div class="page-narrow">
+
+  <div class="card">
+    <div class="ctit">💾 Sauvegarde complète</div>
+    <p style="font-size:13px;color:var(--t2);margin-bottom:14px;">
+      Génère un fichier <strong>ZIP</strong> contenant l'intégralité des données LCA Transfert :
+      missions actives et archivées (avec photos CMR), comptes chauffeurs, véhicules, lieux, messages.
+      À télécharger périodiquement (idéalement chaque mois) et à archiver sur un stockage externe
+      (Drive, NAS, disque dur).
+    </p>
+    <div id="backup-summary" style="display:none;background:var(--blt);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:var(--t1);"></div>
+    <div id="backup-progress" style="display:none;font-size:13px;color:var(--blue);margin-bottom:10px;">⏳ Préparation de la sauvegarde…</div>
+    <button class="btn bp" id="btn-create-backup" onclick="createBackupZip()">
+      💾 Créer une sauvegarde ZIP maintenant
+    </button>
+  </div>
+
+  <div class="card" style="margin-top:16px;">
+    <div class="ctit">📋 Que contient le ZIP ?</div>
+    <ul style="font-size:13px;color:var(--t2);line-height:1.6;padding-left:20px;margin:0;">
+      <li><code>missions.json</code> — missions en cours (non clôturées)</li>
+      <li><code>missions_archive.json</code> — missions terminées (avec photos CMR encodées)</li>
+      <li><code>messages.json</code> — historique des messages bureau ↔ chauffeurs</li>
+      <li><code>active_drivers.json</code> — état actuel des chauffeurs connectés</li>
+      <li><code>driver_accounts.json</code> — comptes chauffeurs (sans mot de passe en clair)</li>
+      <li><code>vehicles.json</code> — flotte tracteurs et remorques</li>
+      <li><code>locations.json</code> — liste des lieux configurés</li>
+      <li><code>manifest.json</code> — date de la sauvegarde, comptage par table, version</li>
+    </ul>
+    <p style="font-size:12px;color:var(--t3);margin-top:10px;">
+      💡 Le ZIP peut faire plusieurs Mo si vous avez de nombreuses photos CMR archivées.
+      La génération peut prendre 10-30 secondes pour des bases volumineuses.
+    </p>
+  </div>
+
+  <div class="card" style="margin-top:16px;border-color:rgba(163,45,45,0.3);">
+    <div class="ctit" style="color:var(--red);">⚠️ Restauration</div>
+    <p style="font-size:13px;color:var(--t2);">
+      La restauration depuis ce ZIP n'est pas automatisée — elle nécessite une intervention manuelle
+      via le SQL Editor de Supabase ou un outil comme DBeaver. Conservez le ZIP en lieu sûr et
+      contactez-moi en cas de besoin de restauration.
+    </p>
+    <p style="font-size:13px;color:var(--t2);">
+      Pour une restauration <strong>récente</strong> (≤ 7 jours), utilisez plutôt le bouton
+      « Restore » dans Supabase → Database → Backups (point-in-time recovery).
+    </p>
+  </div>
+
+</div>
+</div>
+
 </div><!-- /main-app -->
 
 <!-- VERSION -->
-<div class="version-footer" id="ver-footer" style="display:none;">Version 1.16 (release: 24 avril 2026) — © Kalsj121</div>
+<div class="version-footer" id="ver-footer" style="display:none;">Version 1.21 (release: 24 avril 2026) — © Kalsj121</div>
 
 <!-- Supabase Library -->
 <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!-- v1.21 : JSZip pour la création de sauvegardes ZIP côté navigateur -->
+<script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script defer src="./supabase_config.js"></script>
 
 <script defer>
@@ -470,7 +526,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // VIEWS
 // ============================================================
 function switchView(v) {
-  ['dashboard','messages','reports','accounts','vehicles'].forEach(id => {
+  ['dashboard','messages','reports','accounts','vehicles','backups'].forEach(id => {
     const tab = document.getElementById('tab-'+id);
     const view = document.getElementById('view-'+id);
     if(tab) tab.classList.toggle('on', id===v);
@@ -480,6 +536,7 @@ function switchView(v) {
   if (v === 'reports')  loadArchiveList();
   if (v === 'accounts') loadAccounts();
   if (v === 'vehicles') loadVehicles();
+  if (v === 'backups')  loadBackupSummary();
 }
 
 // ============================================================
@@ -2191,6 +2248,145 @@ async function onAppReady() {
         console.log('[DIAG] ✅ active_drivers OK (colonnes pause présentes)', data);
       }
     } catch(e) { console.error('[DIAG]', e.message); }
+  }
+}
+
+// ============================================================
+// SAUVEGARDES (v1.21)
+// ============================================================
+const BACKUP_TABLES = [
+  'missions',
+  'missions_archive',
+  'messages',
+  'active_drivers',
+  'driver_accounts',
+  'vehicles',
+  'locations'
+];
+
+async function loadBackupSummary() {
+  const summaryEl = document.getElementById('backup-summary');
+  if (!summaryEl || !window.supabaseClient) return;
+  summaryEl.style.display = '';
+  summaryEl.innerHTML = '⏳ Comptage des données…';
+  try {
+    const counts = {};
+    for (const tbl of BACKUP_TABLES) {
+      try {
+        const { count, error } = await window.supabaseClient
+          .from(tbl).select('*', { count: 'exact', head: true });
+        counts[tbl] = error ? '?' : (count ?? '?');
+      } catch(e) { counts[tbl] = '?'; }
+    }
+    const rows = Object.entries(counts).map(([t,c]) =>
+      `<div style="display:flex;justify-content:space-between;padding:2px 0;"><span>${t}</span><strong>${c}</strong></div>`
+    ).join('');
+    summaryEl.innerHTML = '<div style="font-weight:600;margin-bottom:6px;">📊 État actuel</div>' + rows;
+  } catch(e) {
+    summaryEl.innerHTML = '⚠️ Impossible de récupérer le résumé : ' + (e.message || e);
+  }
+}
+
+async function fetchAllRows(tableName) {
+  // Pagination par tranches de 1000 lignes (limite Supabase par défaut).
+  const PAGE = 1000;
+  let all = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await window.supabaseClient
+      .from(tableName)
+      .select('*')
+      .range(from, from + PAGE - 1);
+    if (error) { console.warn('[Backup] erreur sur', tableName, ':', error.message); break; }
+    if (!data || !data.length) break;
+    all = all.concat(data);
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
+
+async function createBackupZip() {
+  const btn = document.getElementById('btn-create-backup');
+  const progEl = document.getElementById('backup-progress');
+  if (!window.supabaseClient) {
+    showToast('⚠️ Supabase non initialisé');
+    return;
+  }
+  if (typeof JSZip === 'undefined') {
+    showToast('⚠️ JSZip non chargé — rafraîchissez la page');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '⏳ Génération en cours…';
+  progEl.style.display = '';
+
+  try {
+    const zip = new JSZip();
+    const counts = {};
+    for (const tbl of BACKUP_TABLES) {
+      progEl.textContent = '⏳ Lecture de la table ' + tbl + '…';
+      const rows = await fetchAllRows(tbl);
+      counts[tbl] = rows.length;
+      // v1.21 : sanitiser driver_accounts (ne pas exporter le password en clair)
+      const safe = (tbl === 'driver_accounts')
+        ? rows.map(r => { const { password, ...rest } = r; return { ...rest, password: '***REDACTED***' }; })
+        : rows;
+      zip.file(tbl + '.json', JSON.stringify(safe, null, 2));
+    }
+
+    // Manifest
+    const now = new Date();
+    const manifest = {
+      generated_at:   now.toISOString(),
+      generated_by:   currentUser?.full_name || currentUser?.username || 'bureau',
+      app_version:    'LCA Transfert v1.21',
+      schema_version: '1.21',
+      tables_count:   counts,
+      total_rows:     Object.values(counts).reduce((a,b) => a + (b||0), 0),
+      notes: 'Sauvegarde JSON intégrale. Les photos CMR sont incluses en base64 dans missions_archive.stops[].cmrData. Les mots de passe chauffeurs ont été expurgés.'
+    };
+    zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+    zip.file('README.txt',
+      'LCA Transfert — Sauvegarde complète\n' +
+      '=====================================\n\n' +
+      'Date : ' + now.toLocaleString('fr-BE') + '\n' +
+      'Version app : ' + manifest.app_version + '\n\n' +
+      'Ce ZIP contient l\'intégralité des données de l\'application LCA Transfert\n' +
+      'à l\'instant T. Conservez-le sur un stockage sécurisé (Drive, NAS, disque externe).\n\n' +
+      'Fichiers inclus :\n' +
+      Object.entries(counts).map(([t,c]) => '  - ' + t + '.json  (' + c + ' lignes)').join('\n') + '\n' +
+      '  - manifest.json (métadonnées de cette sauvegarde)\n\n' +
+      'Pour restaurer : ouvrez les .json avec un éditeur de texte, ou contactez votre prestataire\n' +
+      'pour un re-import via SQL Editor de Supabase ou DBeaver.\n'
+    );
+
+    progEl.textContent = '⏳ Compression du ZIP…';
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+
+    const dateStr = now.toLocaleDateString('fr-BE').replace(/\//g, '-');
+    const timeStr = now.toLocaleTimeString('fr-BE', { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
+    const filename = 'LCA-backup-' + dateStr + '-' + timeStr + '.zip';
+
+    // Déclencher le téléchargement
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+
+    const sizeMB = (blob.size / (1024 * 1024)).toFixed(2);
+    progEl.style.display = 'none';
+    showToast('✅ Sauvegarde téléchargée — ' + sizeMB + ' MB');
+    // Rafraîchir le résumé
+    loadBackupSummary();
+  } catch(e) {
+    console.error('[Backup] échec :', e);
+    progEl.textContent = '❌ Erreur : ' + (e.message || e);
+    showToast('Erreur sauvegarde : ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 Créer une sauvegarde ZIP maintenant';
   }
 }
 </script>
